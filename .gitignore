@@ -1,0 +1,9 @@
+LumaBar.exe
+LumaBar.log*
+session.json*
+settings.json.tmp
+tests/bin/
+*.user
+.vs/
+bin/
+obj/

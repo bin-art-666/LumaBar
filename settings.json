@@ -1,0 +1,14 @@
+{
+  "PollMilliseconds": 350,
+  "StableMilliseconds": 700,
+  "ContentStableMilliseconds": 1400,
+  "MinimumSwitchMilliseconds": 1800,
+  "SourceStableMilliseconds": 180,
+  "SourceMinimumSwitchMilliseconds": 400,
+  "DarkThreshold": 0.44,
+  "LightThreshold": 0.60,
+  "HoldOwnedDialogs": true,
+  "HoldMediaPlayers": true,
+  "ApplicationRules": {},
+  "IgnoredProcesses": []
+}
