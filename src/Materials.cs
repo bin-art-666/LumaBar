@@ -209,6 +209,7 @@ namespace LumaBar
             internal Exception Error;
             internal bool Abandoned;
             internal int Generation;
+            internal long Sequence;
         }
         private readonly object gate = new object();
         private readonly Queue<Request> requests = new Queue<Request>();
@@ -228,6 +229,8 @@ namespace LumaBar
         internal MaterialSnapshot Snapshot { get { return snapshot; } }
         internal string Status { get { return snapshot.Message; } }
         private long completedUpdates;
+        private long nextSequence, lastQueuedSequence, appliedSequence;
+        internal long AppliedSequence { get { return Interlocked.Read(ref appliedSequence); } }
         internal long CompletedUpdates { get { return Interlocked.Read(ref completedUpdates); } }
 
         internal MaterialController() : this(new NativeMaterialBackend()) { }
@@ -249,20 +252,22 @@ namespace LumaBar
             }
             lastKey = null;
         }
-        internal void Apply(GlassSettings settings, MaterialScene scene, Tone tone, bool force = false)
-        { Apply(ReadabilityPolicy.Capture(settings, scene, tone), force); }
-        internal void Apply(MaterialPlan plan, bool force = false)
+        internal long Apply(GlassSettings settings, MaterialScene scene, Tone tone, bool force = false)
+        { return Apply(ReadabilityPolicy.Capture(settings, scene, tone), force); }
+        internal long Apply(MaterialPlan plan, bool force = false)
         {
-            if (disposed) return;
+            if (disposed) return 0;
             string key = plan.Key;
-            if (!force && key == lastKey && clock.ElapsedMilliseconds < nextApply) return;
+            if (!force && key == lastKey && clock.ElapsedMilliseconds < nextApply) return lastQueuedSequence;
             lastKey = key; nextApply = clock.ElapsedMilliseconds + 2000;
             lock (gate)
             {
                 if (requests.Count > 0 && requests.Peek().Completed == null) requests.Dequeue();
-                requests.Enqueue(new Request { Plan = plan.Enabled ? plan : null, Generation = generation });
+                lastQueuedSequence = ++nextSequence;
+                requests.Enqueue(new Request { Plan = plan.Enabled ? plan : null, Generation = generation, Sequence = lastQueuedSequence });
             }
             ready.Set();
+            return lastQueuedSequence;
         }
         internal void Restore()
         {
@@ -310,8 +315,9 @@ namespace LumaBar
                             {
                                 RestoreOwned();
                                 snapshot = new MaterialSnapshot(MaterialState.Native, "系统原生材质", faulted);
+                                Interlocked.Exchange(ref appliedSequence, request.Sequence);
                             }
-                            else ApplyCore(request.Plan, request.Generation);
+                            else if (ApplyCore(request.Plan, request.Generation)) Interlocked.Exchange(ref appliedSequence, request.Sequence);
                         }
                         catch (Exception error)
                         {
@@ -340,7 +346,7 @@ namespace LumaBar
             }
             finally { ready.Dispose(); }
         }
-        private void ApplyCore(MaterialPlan plan, int requestedGeneration)
+        private bool ApplyCore(MaterialPlan plan, int requestedGeneration)
         {
             uint pid = backend.ExplorerPid;
             int requestedRetry = Interlocked.CompareExchange(ref retryEpoch, 0, 0);
@@ -351,24 +357,25 @@ namespace LumaBar
             {
                 if (snapshot.State != MaterialState.RestoreFailed)
                     snapshot = new MaterialSnapshot(MaterialState.Fallback, "已降级为原生材质 · " + failureReason + "（可手动重试）", true);
-                return;
+                return false;
             }
             if (plan.Targets.Count == 0) throw new InvalidOperationException("未找到任务栏，请检查显示器连接。");
             if (!plan.Custom && !owned)
-            { snapshot = new MaterialSnapshot(MaterialState.Native, "系统原生材质"); return; }
+            { snapshot = new MaterialSnapshot(MaterialState.Native, "系统原生材质"); return true; }
             snapshot = new MaterialSnapshot(MaterialState.Connecting, "正在连接材质组件，尚未确认应用");
             backend.Connect(); ownerPid = pid;
             // A newer scene or pause may arrive while upstream initialization waits for Explorer.
-            lock (gate) { if (requests.Count > 0 || requestedGeneration != generation) return; }
+            lock (gate) { if (requests.Count > 0 || requestedGeneration != generation) return false; }
             snapshot = new MaterialSnapshot(MaterialState.Applying, "正在应用外观，等待组件完成");
             owned = true;
             foreach (MaterialTarget target in plan.Targets)
             {
-                lock (gate) { if (requestedGeneration != generation) return; }
+                lock (gate) { if (requestedGeneration != generation) return false; }
                 backend.Apply(target);
             }
             snapshot = new MaterialSnapshot(plan.Custom ? MaterialState.Applied : MaterialState.Native,
                 plan.Custom ? "玻璃效果已应用 · " + plan.Description : "系统原生材质");
+            return true;
         }
         public void Dispose()
         {

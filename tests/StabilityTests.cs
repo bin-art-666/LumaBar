@@ -40,7 +40,7 @@ namespace LumaBar
     {
         private static void StabilityTests()
         {
-            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); MaterialRecoveryTests();
+            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); MaterialRecoveryTests();
             using (StatusWindow window = new StatusWindow())
             {
                 int retry = 0; window.RetryRequested += delegate { retry++; };
@@ -198,6 +198,30 @@ namespace LumaBar
             engine.Observe(1, 1, Tone.Dark, 200, true, true, false);
             engine.Observe(2, 1, Tone.Dark, 250, true, false, false);
             Check(engine.Observe(2, 1, Tone.Dark, 450, true, false, true) == Tone.Light, "cancelled deferred switch did not consume the real theme cooldown");
+        }
+        private static void BlendSafetyTests()
+        {
+            using (TaskbarBlend blend = new TaskbarBlend())
+            {
+                Check(!blend.Active, "blend starts without a window or captured taskbar");
+                blend.Cancel(); blend.Cancel();
+                Check(!blend.Active, "repeated blend cancellation is safe");
+            }
+            using (TaskbarBlendWindow window = new TaskbarBlendWindow(new Rectangle(10, 10, 60, 30), new Bitmap(60, 30)))
+            {
+                Check(!window.ShowInTaskbar && !window.Enabled && window.Bounds == new Rectangle(10, 10, 60, 30), "temporary blend preserves taskbar bounds without a taskbar entry");
+            }
+            FakeMaterialBackend backend = new FakeMaterialBackend();
+            using (MaterialController material = new MaterialController(backend))
+            {
+                long requested = material.Apply(TestPlan(Tone.Dark), true);
+                WaitUntil(delegate { return material.CompletedUpdates > 0; });
+                Check(requested > 0 && material.AppliedSequence == requested, "blend readiness acknowledges the successfully applied request");
+                backend.FailApply = true;
+                long failed = material.Apply(TestPlan(Tone.Light), true);
+                WaitUntil(delegate { return material.CompletedUpdates > 1; });
+                Check(material.AppliedSequence < failed && material.Snapshot.CanRetry, "failed material request cannot release a blend as successful");
+            }
         }
         private static MaterialPlan TestPlan(Tone tone)
         { return ReadabilityPolicy.Build(new GlassSettings(), MaterialScene.Desktop, tone, TwoDisplays(), "left"); }

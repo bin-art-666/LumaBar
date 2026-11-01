@@ -94,6 +94,7 @@ namespace LumaBar
                     return 0;
                 }
                 if (args.Length == 1 && args[0] == "--shell") { ShellTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--blend") { BlendNativeTest(); return 0; }
                 if (args.Length == 2 && args[0] == "--transition") { TransitionShellTest(args[1]); return 0; }
                 if (args.Length == 1 && args[0] == "--materials") { MaterialsShellTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--material-watchdog") { MaterialWatchdogTest(); return 0; }
@@ -243,6 +244,59 @@ namespace LumaBar
                 finally { mutex.ReleaseMutex(); }
             }
         }
+        private static void BlendNativeTest()
+        {
+            Application.EnableVisualStyles(); Native.EnableDpi();
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            using (Form background = new Form { Text = "LumaBar fade regression", FormBorderStyle = FormBorderStyle.None, StartPosition = FormStartPosition.Manual,
+                Bounds = new Rectangle(area.Left + 80, area.Top + 80, 360, 160), BackColor = Color.Black })
+            {
+                background.Show(); background.Activate(); Pump();
+                IntPtr foreground = Native.GetForegroundWindow();
+                Bitmap image = new Bitmap(background.Width, background.Height);
+                using (Graphics g = Graphics.FromImage(image)) g.Clear(Color.White);
+                using (TaskbarBlendWindow overlay = new TaskbarBlendWindow(background.Bounds, image))
+                {
+                    overlay.ShowPassive();
+                    Check(Native.GetForegroundWindow() == foreground, "blend window never steals foreground focus");
+                    Native.Point center = new Native.Point(background.Left + 180, background.Top + 80);
+                    IntPtr dc = Native.GetDC(IntPtr.Zero);
+                    bool intermediate = false; int frames = 0; double last = 1;
+                    System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+                    try
+                    {
+                        while (elapsed.ElapsedMilliseconds < TaskbarBlend.Duration)
+                        {
+                            double progress = elapsed.Elapsed.TotalMilliseconds / TaskbarBlend.Duration;
+                            overlay.SetBlendOpacity(TaskbarBlend.OpacityAt(progress));
+                            Application.DoEvents(); Thread.Sleep(15);
+                            uint color = Native.GetPixel(dc, center.X, center.Y);
+                            if (color == 0xFFFFFFFF) continue;
+                            double value = Brightness.Of((byte)(color & 255), (byte)((color >> 8) & 255), (byte)((color >> 16) & 255));
+                            if (value > .08 && value < .92) { intermediate = true; frames++; }
+                            Check(value <= last + .1, "rendered fade stays monotonic"); last = value;
+                        }
+                    }
+                    finally { Native.ReleaseDC(IntPtr.Zero, dc); }
+                    Console.WriteLine("Rendered crossfade: {0}ms, intermediate samples={1}, final brightness={2:F3}", elapsed.ElapsedMilliseconds, frames, last);
+                    Check(intermediate && last < .3, "desktop compositor renders intermediate brightness rather than one abrupt swap");
+                    Check(Native.GetForegroundWindow() == foreground, "completed fade preserves the original active window");
+                }
+                Check(Native.GetForegroundWindow() == foreground, "disposing transition overlay preserves focus");
+                using (TaskbarBlend blend = new TaskbarBlend())
+                {
+                    blend.Begin();
+                    Check(!blend.Active || Native.GetForegroundWindow() == foreground, "taskbar capture and passive display keep foreground focus");
+                    background.Left += 20; Pump();
+                    Check(!blend.Active, "new foreground geometry cancels a stale taskbar image");
+                    blend.Begin();
+                    System.Diagnostics.Stopwatch timeout = System.Diagnostics.Stopwatch.StartNew();
+                    while (blend.Active && timeout.ElapsedMilliseconds < 1500) { Application.DoEvents(); Thread.Sleep(5); }
+                    Check(!blend.Active, "missing material completion cannot leave a permanent overlay");
+                }
+            }
+        }
+
         private static void TransitionShellTest(string settingsPath)
         {
             Application.EnableVisualStyles(); Native.EnableDpi();
@@ -258,6 +312,7 @@ namespace LumaBar
                     Settings settings = Files.Json.Deserialize<Settings>(File.ReadAllText(settingsPath)); settings.Validate();
                     using (Form animatedWindow = new Form { Text = "LumaBar restore regression", BackColor = Color.White, StartPosition = FormStartPosition.Manual, Bounds = new Rectangle(Screen.PrimaryScreen.WorkingArea.Left + 150, Screen.PrimaryScreen.WorkingArea.Top + 100, 900, 600) })
                     using (MaterialController material = new MaterialController())
+                    using (TaskbarBlend crossfade = new TaskbarBlend())
                     {
                         animatedWindow.Show(); Pump();
                         // Initialize COM first so the measurement covers an ordinary restore.
@@ -297,12 +352,23 @@ namespace LumaBar
                             long completed = material.CompletedUpdates;
                             long submittedAt = -1;
                             System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
-                            theme.Apply(Tone.Dark, delegate { submittedAt = elapsed.ElapsedMilliseconds; material.Apply(target, true); });
+                            IntPtr focusedBefore = Native.GetForegroundWindow();
+                            crossfade.Begin();
+                            theme.Apply(Tone.Dark, delegate {
+                                submittedAt = elapsed.ElapsedMilliseconds;
+                                long request = material.Apply(target, true);
+                                crossfade.WhenReady(delegate { return material.AppliedSequence >= request; });
+                            });
                             while (material.CompletedUpdates == completed && elapsed.ElapsedMilliseconds < 5000)
                             { Application.DoEvents(); Thread.Sleep(2); }
                             Console.WriteLine("Light fullscreen -> dark window glass: callback={0}ms, applied={1}ms, post-theme gap={2}ms", submittedAt, elapsed.ElapsedMilliseconds, elapsed.ElapsedMilliseconds - submittedAt);
                             Check(submittedAt >= 0 && material.CompletedUpdates > completed && material.Snapshot.State == MaterialState.Applied,
                                 "matching native glass applies in coordinated restore " + iteration);
+                            System.Diagnostics.Stopwatch reveal = System.Diagnostics.Stopwatch.StartNew();
+                            while (crossfade.Active && reveal.ElapsedMilliseconds < 1000) { Application.DoEvents(); Thread.Sleep(5); }
+                            Check(!crossfade.Active && Native.GetForegroundWindow() == focusedBefore,
+                                "real taskbar crossfade completes and removes all overlays without focus change " + iteration);
+                            Console.WriteLine("Crossfade reveal finished: {0}ms", reveal.ElapsedMilliseconds);
                         }
                     }
                 }

@@ -61,6 +61,8 @@ namespace LumaBar
         private MaterialScene materialScene = MaterialScene.Desktop;
         private readonly SceneCoordinator sceneCoordinator = new SceneCoordinator();
         private readonly VisualTransitionGate visualTransition = new VisualTransitionGate();
+        private readonly TaskbarBlend blend = new TaskbarBlend();
+        private string visualKey;
         private GlassSettings previewGlass;
         private readonly ThemeController controller;
         private DecisionEngine engine;
@@ -154,12 +156,29 @@ namespace LumaBar
             }
             catch (Exception error) { Report(error); return false; }
         }
+        private bool CanApplyAppearance
+        { get { return mode != "仅检测（不修改）" && !paused && !sessionLocked && !suspended && !SystemInformation.HighContrast && sceneCoordinator.Ready && !visualTransition.Waiting; } }
+        private MaterialPlan PrepareAppearance(Tone tone)
+        {
+            GlassSettings glass = previewGlass ?? settings.Glass;
+            MaterialPlan plan = ReadabilityPolicy.Capture(glass, materialScene, tone);
+            string key = plan.Key;
+            if (visualKey != null && visualKey != key) blend.Begin();
+            visualKey = key;
+            return plan;
+        }
         private void ApplyMaterials(bool force = false)
         {
-            if (mode == "仅检测（不修改）" || paused || sessionLocked || suspended || SystemInformation.HighContrast || !sceneCoordinator.Ready || visualTransition.Waiting) return;
+            if (!CanApplyAppearance) return;
             GlassSettings glass = previewGlass ?? settings.Glass;
+            MaterialPlan plan = PrepareAppearance(controller.Current.Tone);
             if (materials == null && glass.Enabled) materials = new MaterialController();
-            if (materials != null) materials.Apply(glass, materialScene, controller.Current.Tone, force);
+            if (materials != null)
+            {
+                long submitted = materials.Apply(plan, force);
+                blend.WhenReady(delegate { return materials.AppliedSequence >= submitted; });
+            }
+            else blend.WhenReady(delegate { return true; });
         }
         private void RestoreMaterials() { if (materials != null) materials.Restore(); }
         internal static void RestoreBoth(Action material, Action theme)
@@ -169,7 +188,7 @@ namespace LumaBar
             try { theme(); } catch (Exception error) { errors.Add(error); }
             if (errors.Count > 0) throw new AggregateException("部分恢复未完成，请重试。", errors);
         }
-        private void RestoreManagedState() { RestoreBoth(RestoreMaterials, delegate { controller.Restore(); }); }
+        private void RestoreManagedState() { blend.Cancel(); visualKey = null; RestoreBoth(RestoreMaterials, delegate { controller.Restore(); }); }
         private void RetryMaterials()
         {
             if (paused || sessionLocked || suspended || SystemInformation.HighContrast)
@@ -183,7 +202,11 @@ namespace LumaBar
         }
         private void CommitTheme(Tone tone)
         {
-            if (tone != controller.Current.Tone && materials != null) materials.InvalidatePending();
+            if (tone != controller.Current.Tone)
+            {
+                if (CanApplyAppearance) PrepareAppearance(tone);
+                if (materials != null) materials.InvalidatePending();
+            }
             controller.Apply(tone, delegate { ApplyMaterials(true); });
         }
         private void UpdateMaterialStatus()
@@ -353,6 +376,8 @@ namespace LumaBar
                     window.UpdateStatus("检测到外部主题更改，已暂停", null, controller.Current.Tone);
                     return;
                 }
+                // Leave the UI timer free to fade at display cadence; thumbnail reads can take 30ms.
+                if (blend.Active) { timer.Interval = 40; return; }
                 Tone current = controller.Current.Tone;
                 Settings samplingSettings = settings;
                 if (previewGlass != null)
@@ -443,6 +468,7 @@ namespace LumaBar
             SystemEvents.SessionEnding -= OnSessionEnding;
             SystemEvents.PowerModeChanged -= OnPowerMode;
             if (materials != null) materials.Dispose();
+            blend.Dispose();
             tray.Visible = false;
             tray.Dispose();
             timer.Dispose();
@@ -625,7 +651,7 @@ namespace LumaBar
             BackColor = Color.FromArgb(22, 25, 32);
             ForeColor = Color.FromArgb(230, 235, 242);
             Font = new Font("Microsoft YaHei UI", 10);
-            AddLabel("LumaBar 0.6.3", 28, 24, 310, 45, 25, Color.White);
+            AddLabel("LumaBar 0.6.4", 28, 24, 310, 45, 25, Color.White);
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
             AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 76, 464, 30, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));
