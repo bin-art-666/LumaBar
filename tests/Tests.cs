@@ -78,7 +78,6 @@ namespace LumaBar
                     return 0;
                 }
                 if (args.Length == 1 && args[0] == "--native") { NativeTest(); return 0; }
-                if (args.Length == 1 && args[0] == "--events") { EventNativeTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--refresh-speed") { RefreshSpeedTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--readability") { ReadabilityNativeTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--wallpaper-cache")
@@ -137,7 +136,7 @@ namespace LumaBar
                 SourceSpeedTests();
                 PreferencesTests();
                 MaterialTests();
-                EventSpeedTests();
+                ClassicThemeTests();
                 StabilityTests();
                 Console.WriteLine(passed + " checks passed. No real system settings were modified.");
                 return 0;
@@ -305,7 +304,7 @@ namespace LumaBar
                 grid.Rows.Clear(); grid.Rows.Add("WeChat.exe", "light");
                 window.Show(); Pump();
                 foreach (Control control in window.Controls) if (control is Button && control.Text == "保存并应用") ((Button)control).PerformClick();
-                Check(saved && current.SourceStableMilliseconds == 80, "settings save applies selected speed");
+                Check(saved && current.SourceStableMilliseconds == 120, "settings save applies selected speed");
                 Check(current.RuleFor("wechat") == "light" && current.RuleFor("Code") == "auto", "settings grid adds and removes normalized rules");
                 Check(current.DarkThreshold == .40, "settings keeps advanced parameters outside the editor");
             }
@@ -590,7 +589,7 @@ namespace LumaBar
 
         private static void SourceSpeedTests()
         {
-            // Retain the 0.5 timing regression as well as the faster preset tests below.
+            // Preserve v0.4 source-transition and same-window anti-flicker behavior.
             Settings settings = new Settings { TimingVersion = 1, SourceStableMilliseconds = 180, SourceMinimumSwitchMilliseconds = 400 };
             DecisionEngine engine = new DecisionEngine(settings);
             long paper = long.MinValue;
@@ -626,96 +625,48 @@ namespace LumaBar
             Check(engine.Observe(42, 0.95, Tone.Dark, 2700, false, false) == Tone.Light, "stable content eventually switches with normal protection");
             Settings legacy = Files.Json.Deserialize<Settings>("{\"PollMilliseconds\":350,\"StableMilliseconds\":700,\"MinimumSwitchMilliseconds\":1800}");
             legacy.Validate();
-            Check(legacy.SourceStableMilliseconds == 100 && legacy.SourceMinimumSwitchMilliseconds == 250,
-                "old settings automatically gain fast source defaults");
+            Check(legacy.SourceStableMilliseconds == 180 && legacy.SourceMinimumSwitchMilliseconds == 400,
+                "old settings retain classic source defaults");
         }
 
-        private static void EventSpeedTests()
+        private static void ClassicThemeTests()
         {
-            ProbeSchedule schedule = new ProbeSchedule();
-            Check(schedule.Interval(0, 350) == 350, "idle probing retains economical polling interval");
-            Check(schedule.Signal(10) && schedule.Interval(10, 350) == 50, "window event requests an immediate probe and 50ms burst");
-            Check(!schedule.Signal(25) && !schedule.Signal(60), "event storms are coalesced rather than restarting every timer tick");
-            Check(schedule.Interval(1061, 350) == 350, "burst ends after window events settle");
-            schedule.Observe(2000, false, 41);
-            schedule.Observe(3300, false, 42);
-            Check(schedule.Interval(3300, 350) == 50, "switching two maximized apps also starts fast probing");
-            Check(!WindowEvents.Relevant(0x800B, new IntPtr(1), -4, 0, new IntPtr(1)) &&
-                !WindowEvents.Relevant(0x800B, new IntPtr(2), 0, 0, new IntPtr(1)), "background-window and child-content geometry events are ignored");
-            Check(WindowEvents.Relevant(0x800B, new IntPtr(1), 0, 0, new IntPtr(1)), "foreground window resize can trigger fast probing");
-
-            Settings balanced = new Settings(); balanced.Validate();
-            DecisionEngine engine = new DecisionEngine(balanced);
+            Settings settings = new Settings(); settings.Validate();
+            Check(settings.SourceStableMilliseconds == 180 && settings.SourceMinimumSwitchMilliseconds == 400, "classic balanced defaults restored");
+            DecisionEngine engine = new DecisionEngine(settings);
             engine.Observe(1, .1, Tone.Light, 0, false, false);
-            Check(engine.Observe(1, .1, Tone.Light, 50, false, false) == null, "new fast path still rejects a single short bright-dark transition");
-            Check(engine.Observe(1, .1, Tone.Light, 100, false, false) == Tone.Dark, "balanced source confirms after 100ms instead of 180ms");
-            engine.Observe(2, 1, Tone.Dark, 150, false, false);
-            Check(engine.Observe(2, 1, Tone.Dark, 250, false, false) == null, "faster maximized app changes still respect source cooldown");
-            Check(engine.Observe(2, 1, Tone.Dark, 350, false, false) == Tone.Light, "different maximized app avoids the old 700ms normal dwell");
-            engine.Observe(2, 1, Tone.Light, 700, false, false);
-            engine.Observe(2, 1, Tone.Light, 1050, false, false);
-            engine.Observe(2, 1, Tone.Light, 1400, false, false);
-            engine.Observe(2, .1, Tone.Light, 1750, false, false);
-            engine.Observe(2, .1, Tone.Light, 1800, false, false);
-            engine.Observe(2, .1, Tone.Light, 1850, false, false);
-            Check(engine.Observe(2, .1, Tone.Light, 2000, false, false) == null, "rapid probing does not shorten settled-window content protection");
-
-            Settings sensitive = new Settings(); sensitive.SetPace("灵敏");
-            engine = new DecisionEngine(sensitive);
-            engine.Observe(3, 1, Tone.Dark, 0, true, true);
-            Check(engine.Observe(3, 1, Tone.Dark, 50, true, true) == null && engine.Observe(3, 1, Tone.Dark, 100, true, true) == Tone.Light,
-                "sensitive wallpaper path confirms at the next 50ms sample after 80ms dwell");
-            string previous = "{\"PollMilliseconds\":200,\"StableMilliseconds\":450,\"ContentStableMilliseconds\":900,\"MinimumSwitchMilliseconds\":1200,\"SourceStableMilliseconds\":120,\"SourceMinimumSwitchMilliseconds\":250,\"Glass\":{\"Desktop\":{\"Material\":\"clear\",\"TintOpacity\":14}}}";
-            Settings migrated = Files.Json.Deserialize<Settings>(previous); migrated.Validate();
-            Check(migrated.SourceStableMilliseconds == 80 && migrated.SourceMinimumSwitchMilliseconds == 200 && migrated.Glass.Desktop.TintOpacity == 14,
-                "existing sensitive preset upgrades while preserving user's glass appearance");
-            Settings custom = new Settings { SourceStableMilliseconds = 230, SourceMinimumSwitchMilliseconds = 550 }; custom.Validate();
-            Check(custom.SourceStableMilliseconds == 230 && custom.SourceMinimumSwitchMilliseconds == 550, "custom advanced source timing is preserved");
-            Settings roundTrip = Files.Json.Deserialize<Settings>(Files.Json.Serialize(migrated)); roundTrip.Validate();
-            Check(roundTrip.TimingVersion == 1 && roundTrip.SourceStableMilliseconds == 80, "timing migration is stable after save and reload");
-
-            // Compare first-decision timing on the same deterministic input and 50ms cadence.
-            Console.WriteLine("Source confirmation at 50ms cadence: old balanced={0}ms, new balanced={1}ms", ConfirmAt(180), ConfirmAt(100));
-        }
-        private static int ConfirmAt(int dwell)
-        {
-            DecisionEngine engine = new DecisionEngine(new Settings { SourceStableMilliseconds = dwell });
-            for (int time = 0; time <= 1000; time += 50)
-                if (engine.Observe(1, .1, Tone.Light, time, false, false) == Tone.Dark) return time;
-            throw new Exception("No source decision");
-        }
-
-        [DllImport("user32.dll")] private static extern void NotifyWinEvent(uint eventType, IntPtr window, int objectId, int childId);
-        private static void EventNativeTest()
-        {
-            Application.EnableVisualStyles(); Native.EnableDpi();
-            ThemeValue before = new RegistryThemeStore().Read();
-            using (NotificationWindow window = new NotificationWindow())
+            Check(engine.Observe(1, .1, Tone.Light, 120, false, false) == null, "classic balanced rejects newer 120ms fast confirmation");
+            Check(engine.Observe(1, .1, Tone.Light, 225, false, false) == Tone.Dark, "classic balanced confirms at 225ms with 75ms cadence");
+            engine.Observe(1, .1, Tone.Dark, 1000, false, false);
+            engine.Observe(2, 1, Tone.Dark, 1100, false, false);
+            Check(engine.Observe(2, 1, Tone.Dark, 1325, false, false) == null, "switching maximized apps retains classic normal dwell");
+            Check(engine.Observe(2, 1, Tone.Dark, 1800, false, false) == null, "classic theme cooldown still applies");
+            Check(engine.Observe(2, 1, Tone.Dark, 2200, false, false) == Tone.Light, "stable second app switches after classic dwell and cooldown");
+            foreach (string pace in new string[] { "灵敏", "均衡", "舒缓" })
             {
-                IntPtr handle = window.Handle;
-                int callbacks = 0;
-                using (WindowEvents events = new WindowEvents(delegate { callbacks++; }, true))
-                {
-                    Check(events.Available, "all foreground, minimize and geometry event hooks register");
-                    System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
-                    // Send a synthetic accessibility event; this does not activate a window or change theme.
-                    NotifyWinEvent(0x0003, handle, 0, 0);
-                    while (callbacks == 0 && wait.ElapsedMilliseconds < 3000) { Application.DoEvents(); Thread.Sleep(5); }
-                    Console.WriteLine("Native event delivery elapsed: {0}ms", wait.ElapsedMilliseconds);
-                    Check(callbacks > 0, "out-of-context window events reach the UI message pump");
-                }
-                int afterDispose = callbacks;
-                NotifyWinEvent(0x0003, handle, 0, 0); Pump();
-                Check(callbacks == afterDispose, "disposed window event hooks stop delivering callbacks");
-                using (WindowEvents events = new WindowEvents(delegate { callbacks++; }))
-                {
-                    NotifyWinEvent(0x0003, handle, 0, 0); Pump();
-                    Check(callbacks == afterDispose, "production event hooks skip LumaBar's own UI events");
-                }
+                Settings newer = new Settings(); newer.SetPace(pace);
+                int dwell = newer.SourceStableMilliseconds, cooldown = newer.SourceMinimumSwitchMilliseconds;
+                newer.TimingVersion = 2;
+                newer.SourceStableMilliseconds = pace == "灵敏" ? 80 : pace == "均衡" ? 120 : 180;
+                newer.SourceMinimumSwitchMilliseconds = pace == "灵敏" ? 200 : pace == "均衡" ? 250 : 400;
+                newer.Glass.Desktop.TintOpacity = 14;
+                string glass = Files.Json.Serialize(newer.Glass);
+                newer.Validate();
+                Check(newer.SourceStableMilliseconds == dwell && newer.SourceMinimumSwitchMilliseconds == cooldown, "newer preset returns to 0.4: " + pace);
+                Check(Files.Json.Serialize(newer.Glass) == glass, "glass settings survive classic migration: " + pace);
+                Settings roundtrip = Files.Json.Deserialize<Settings>(Files.Json.Serialize(newer)); roundtrip.Validate();
+                Check(roundtrip.TimingVersion == 3 && roundtrip.SourceStableMilliseconds == dwell, "classic migration is idempotent: " + pace);
             }
-            Check(before.Same(new RegistryThemeStore().Read()), "event hook regression does not change system theme");
+            using (Bitmap wallpaper = new Bitmap(100, 100))
+            {
+                using (Graphics g = Graphics.FromImage(wallpaper)) { g.Clear(Color.Black); g.FillRectangle(Brushes.White, 0, 90, 100, 10); }
+                WallpaperDescription description = new WallpaperDescription { Monitor = new Rectangle(0, 0, 100, 100), VirtualDesktop = new Rectangle(0, 0, 100, 100), SampleArea = new Rectangle(0, 90, 100, 10), Position = 2 };
+                Check(ThemeWallpaperAnalyzer.Analyze(wallpaper, description) < .1, "classic theme analyzes whole wallpaper despite bright taskbar strip");
+                Check(WallpaperAnalyzer.Analyze(wallpaper, description) > .9, "glass keeps independent taskbar-region sampling");
+            }
+            Settings custom = new Settings { PollMilliseconds = 300, SourceStableMilliseconds = 100, TimingVersion = 2 }; custom.Validate();
+            Check(custom.SourceStableMilliseconds == 100, "custom timing remains unchanged");
         }
-
         private static void RefreshSpeedTest()
         {
             Application.EnableVisualStyles(); Native.EnableDpi();
@@ -725,15 +676,9 @@ namespace LumaBar
                 IntPtr handle = receiver.Handle;
                 System.Diagnostics.Stopwatch foreground = System.Diagnostics.Stopwatch.StartNew();
                 Native.RefreshTaskbars();
-                Console.WriteLine("Taskbar-first synchronous refresh elapsed: {0}ms", foreground.ElapsedMilliseconds);
-                // Multiple refreshes must coalesce safely and still notify normal windows.
-                Native.RefreshTaskbars(); Native.RefreshTaskbars();
-                System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
-                while (!Native.WaitForThemeRefresh(0) && wait.ElapsedMilliseconds < 5000) { Application.DoEvents(); Thread.Sleep(5); }
-                Application.DoEvents();
-                Check(Native.WaitForThemeRefresh(0), "coalesced background theme notifications finish within their bounded budget");
-                Check(receiver.Sections.Contains("ImmersiveColorSet"), "normal windows still receive theme notification from the background worker");
-                Check(!receiver.Sections.Contains("TraySettings"), "background normal-window notification keeps the original message contract");
+                Console.WriteLine("Classic synchronous refresh elapsed: {0}ms", foreground.ElapsedMilliseconds);
+                Check(receiver.Sections.Contains("ImmersiveColorSet"), "normal windows receive synchronous classic theme notifications");
+                Check(!receiver.Sections.Contains("TraySettings"), "normal-window notification retains original message contract");
             }
             Check(before.Same(new RegistryThemeStore().Read()), "refresh-speed test leaves system theme preference unchanged");
         }

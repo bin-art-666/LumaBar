@@ -33,6 +33,122 @@ namespace LumaBar
         public Rectangle VirtualDesktop;
     }
 
+    internal static class ThemeWallpaperAnalyzer
+    {
+        internal static Tone ToneOf(double brightness) { return brightness >= 0.5 ? Tone.Light : Tone.Dark; }
+        internal static double Analyze(Bitmap image, WallpaperDescription description)
+        {
+            List<double> values = new List<double>();
+            Rectangle area = description.Position == 5 ? description.VirtualDesktop : description.Monitor;
+            double sx = 1, sy = 1;
+            if (image != null)
+            {
+                if (description.Position == 2) { sx = (double)area.Width / image.Width; sy = (double)area.Height / image.Height; }
+                else if (description.Position >= 3)
+                {
+                    double x = (double)area.Width / image.Width, y = (double)area.Height / image.Height;
+                    sx = sy = description.Position == 3 ? Math.Min(x, y) : Math.Max(x, y);
+                }
+            }
+            for (int row = 0; row < 40; row++)
+                for (int col = 0; col < 64; col++)
+                {
+                    Color color = description.Background;
+                    if (image != null)
+                    {
+                        double x = description.Monitor.Left + (col + 0.5) * description.Monitor.Width / 64;
+                        double y = description.Monitor.Top + (row + 0.5) * description.Monitor.Height / 40;
+                        double px, py;
+                        if (description.Position == 1)
+                        {
+                            px = Mod(x - description.VirtualDesktop.Left, image.Width);
+                            py = Mod(y - description.VirtualDesktop.Top, image.Height);
+                        }
+                        else
+                        {
+                            px = (x - area.Left - (area.Width - image.Width * sx) / 2) / sx;
+                            py = (y - area.Top - (area.Height - image.Height * sy) / 2) / sy;
+                        }
+                        if (px >= 0 && py >= 0 && px < image.Width && py < image.Height)
+                        {
+                            Color pixel = image.GetPixel((int)px, (int)py);
+                            double alpha = pixel.A / 255.0;
+                            color = Color.FromArgb((int)(pixel.R * alpha + color.R * (1 - alpha)),
+                                (int)(pixel.G * alpha + color.G * (1 - alpha)), (int)(pixel.B * alpha + color.B * (1 - alpha)));
+                        }
+                    }
+                    values.Add(Brightness.Of(color.R, color.G, color.B));
+                }
+            return Brightness.Median(values);
+        }
+        private static double Mod(double value, double modulus) { return (value % modulus + modulus) % modulus; }
+    }
+
+    internal static class ThemeWallpaperSampler
+    {
+        private sealed class Cache
+        {
+            internal long NextCheck;
+            internal string Fingerprint;
+            internal double? Brightness;
+            internal string Reason;
+        }
+        private static readonly Stopwatch clock = Stopwatch.StartNew();
+        private static readonly Dictionary<string, Cache> cache = new Dictionary<string, Cache>();
+
+        internal static WindowSample Read(Rectangle monitor)
+        {
+            string key = monitor.ToString() + SystemInformation.VirtualScreen.ToString();
+            Cache entry;
+            if (!cache.TryGetValue(key, out entry))
+            {
+                if (cache.Count > 16) cache.Clear();
+                entry = new Cache(); cache[key] = entry;
+            }
+            if (entry.NextCheck <= clock.ElapsedMilliseconds)
+            {
+                entry.NextCheck = clock.ElapsedMilliseconds + 2000;
+                try
+                {
+                    WallpaperDescription description = WallpaperSampler.Describe(monitor);
+                    string fingerprint = description.Path + "|" + description.Position + "|" + description.Background.ToArgb() + "|" + key;
+                    if (!String.IsNullOrEmpty(description.Path))
+                    {
+                        FileInfo info = new FileInfo(description.Path);
+                        if (!info.Exists) throw new IOException("Wallpaper unavailable");
+                        fingerprint += "|" + info.LastWriteTimeUtc.Ticks + "|" + info.Length;
+                    }
+                    if (entry.Brightness == null || entry.Fingerprint != fingerprint)
+                    {
+                        if (String.IsNullOrEmpty(description.Path)) entry.Brightness = ThemeWallpaperAnalyzer.Analyze(null, description);
+                        else
+                        {
+                            using (FileStream stream = new FileStream(description.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                            using (Bitmap image = new Bitmap(stream))
+                                entry.Brightness = ThemeWallpaperAnalyzer.Analyze(image, description);
+                        }
+                        entry.Fingerprint = fingerprint;
+                    }
+                    entry.Reason = "普通窗口 / 桌面：跟随壁纸";
+                }
+                catch (Exception error)
+                {
+                    if (!(error is IOException) && !(error is UnauthorizedAccessException) && !(error is ArgumentException) &&
+                        !(error is ExternalException) && !(error is NotSupportedException) && !(error is OutOfMemoryException)) throw;
+                    entry.Brightness = null;
+                    entry.Reason = "无法读取壁纸：保持当前明暗";
+                }
+            }
+            return new WindowSample
+            {
+                Valid = entry.Brightness.HasValue, IsWallpaper = true,
+                Brightness = entry.Brightness ?? 0, Reason = entry.Reason,
+                WallpaperContext = unchecked(long.MinValue ^ ((long)(uint)monitor.Left << 32) ^ (uint)monitor.Top)
+            };
+        }
+
+    }
+
     internal static class WallpaperAnalyzer
     {
         internal static Tone ToneOf(double brightness) { return brightness >= 0.5 ? Tone.Light : Tone.Dark; }

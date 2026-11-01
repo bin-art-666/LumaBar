@@ -75,8 +75,8 @@ namespace LumaBar
         private string mode = "自动适应";
         private string lastApplication;
         private long lastApplicationAt = -100000;
-        private ProbeSchedule probeSchedule = new ProbeSchedule();
-        private readonly WindowEvents windowEvents;
+        private bool? timingSource;
+        private long burstUntil;
         internal bool StatusWindowVisible { get { return window.Visible; } }
         internal bool StatusHandleCreated { get { return window.IsHandleCreated; } }
 
@@ -123,14 +123,10 @@ namespace LumaBar
             SystemEvents.SessionSwitch += OnSessionSwitch;
             SystemEvents.SessionEnding += OnSessionEnding;
             SystemEvents.PowerModeChanged += OnPowerMode;
-            SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
-            windowEvents = new WindowEvents(RequestFastProbe);
-            if (!windowEvents.Available) Files.Log("Some window event hooks are unavailable; timer polling remains active.");
             // Create a handle for session callbacks even when logging in to tray.
             IntPtr handle = window.Handle;
             if (!startHidden) window.Show();
             controller.Refresh(); // Also repair stale visuals when the registry already matches.
-            RequestFastProbe();
             timer.Start();
             Files.Log("Started. No images or window titles are recorded.");
         }
@@ -150,7 +146,7 @@ namespace LumaBar
                 Settings next = Files.Json.Deserialize<Settings>(Files.Json.Serialize(settings));
                 next.Validate(); change(next); next.Validate(); Files.SaveSettings(next);
                 settings = next; engine = new DecisionEngine(settings);
-                probeSchedule = new ProbeSchedule();
+                timingSource = null; burstUntil = 0;
                 timer.Interval = settings.PollMilliseconds;
                 window.UpdateStatus("设置已保存，立即生效", null, controller.Current.Tone);
                 return true;
@@ -212,7 +208,7 @@ namespace LumaBar
                 {
                     preferences.AppearancePreview += delegate(GlassSettings glass) { previewGlass = glass; ApplyMaterials(true); };
                     try { preferences.ShowDialog(window); }
-                    finally { previewGlass = null; engine = new DecisionEngine(settings); probeSchedule = new ProbeSchedule(); RequestFastProbe(); ApplyMaterials(true); }
+                    finally { previewGlass = null; engine = new DecisionEngine(settings); timingSource = null; burstUntil = 0; ApplyMaterials(true); }
                 }
             }
             catch (Exception error) { Report(error); }
@@ -278,29 +274,19 @@ namespace LumaBar
                 catch (InvalidOperationException) { }
             }
         }
-        private void RequestFastProbe()
-        {
-            if (exiting || paused || sessionLocked || suspended || timer == null) return;
-            if (probeSchedule.Signal(clock.ElapsedMilliseconds)) timer.Interval = 1;
-        }
-        private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs args)
-        {
-            if (args.Category == UserPreferenceCategory.Desktop)
-                Dispatch(delegate { WallpaperSampler.Invalidate(); RequestFastProbe(); });
-        }
         private void OnSessionSwitch(object sender, SessionSwitchEventArgs args)
         {
             if (args.Reason == SessionSwitchReason.SessionLock)
                 Dispatch(delegate { sessionLocked = true; ReleaseForIdle(); });
             else if (args.Reason == SessionSwitchReason.SessionUnlock)
-                Dispatch(delegate { sessionLocked = false; engine.Reset(); RequestFastProbe(); });
+                Dispatch(delegate { sessionLocked = false; engine.Reset(); });
         }
         private void OnPowerMode(object sender, PowerModeChangedEventArgs args)
         {
             if (args.Mode == PowerModes.Suspend)
                 Dispatch(delegate { suspended = true; ReleaseForIdle(); });
             else if (args.Mode == PowerModes.Resume)
-                Dispatch(delegate { suspended = false; engine.Reset(); WallpaperSampler.Invalidate(); RequestFastProbe(); });
+                Dispatch(delegate { suspended = false; engine.Reset(); WallpaperSampler.Invalidate(); });
         }
         private void OnSessionEnding(object sender, SessionEndingEventArgs args)
         {
@@ -386,15 +372,16 @@ namespace LumaBar
                 }
                 if (sample.Valid)
                 {
-                    probeSchedule.Observe(now, sample.IsWallpaper, sample.DecisionContext);
-                    timer.Interval = probeSchedule.Interval(now, settings.PollMilliseconds);
+                    if (!timingSource.HasValue || timingSource.Value != sample.IsWallpaper) burstUntil = now + 1000;
+                    timingSource = sample.IsWallpaper;
+                    timer.Interval = now < burstUntil ? Math.Min(75, settings.PollMilliseconds) : settings.PollMilliseconds;
                     if (!fixedMode)
                     {
                         Tone? decision = engine.Observe(sample.DecisionContext, sample.DecisionBrightness, current, now, sample.ExplicitRule || sample.IsWallpaper, sample.IsWallpaper);
                         if (decision.HasValue && mode != "仅检测（不修改）") CommitTheme(decision.Value);
                     }
                 }
-                else { engine.Reset(); timer.Interval = probeSchedule.Interval(now, settings.PollMilliseconds); }
+                else { engine.Reset(); timer.Interval = settings.PollMilliseconds; }
                 if (sample.Scene.HasValue || sample.Valid)
                 {
                     sceneCoordinator.Observe(SceneFor(sample), sample.DecisionContext, mode == "仅检测（不修改）" ? null : wanted, controller.Current.Tone, now, settings.SourceStableMilliseconds);
@@ -442,14 +429,10 @@ namespace LumaBar
                 MessageBox.Show(window, "恢复失败，程序保持暂停。请检查日志后重试退出；恢复记录会保留。", "LumaBar");
                 return;
             }
-            // Give the final restore notifications a bounded chance to complete before process exit.
-            Native.WaitForThemeRefresh(1500);
             exiting = true;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.SessionEnding -= OnSessionEnding;
             SystemEvents.PowerModeChanged -= OnPowerMode;
-            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
-            windowEvents.Dispose();
             if (materials != null) materials.Dispose();
             tray.Visible = false;
             tray.Dispose();
@@ -633,7 +616,7 @@ namespace LumaBar
             BackColor = Color.FromArgb(22, 25, 32);
             ForeColor = Color.FromArgb(230, 235, 242);
             Font = new Font("Microsoft YaHei UI", 10);
-            AddLabel("LumaBar 0.6", 28, 24, 310, 45, 25, Color.White);
+            AddLabel("LumaBar 0.6.1", 28, 24, 310, 45, 25, Color.White);
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
             AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 76, 464, 30, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));

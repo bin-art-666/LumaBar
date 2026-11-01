@@ -3,8 +3,8 @@
   "StableMilliseconds": 700,
   "ContentStableMilliseconds": 1400,
   "MinimumSwitchMilliseconds": 1800,
-  "SourceStableMilliseconds": 100,
-  "SourceMinimumSwitchMilliseconds": 250,
+  "SourceStableMilliseconds": 180,
+  "SourceMinimumSwitchMilliseconds": 400,
   "DarkThreshold": 0.44,
   "LightThreshold": 0.6,
   "HoldOwnedDialogs": true,
@@ -42,5 +42,5 @@
     "PerMonitor": true,
     "MonitorOverrides": {}
   },
-  "TimingVersion": 1
+  "TimingVersion": 3
 }
