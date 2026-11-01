@@ -217,9 +217,19 @@ namespace LumaBar
                 long requested = material.Apply(TestPlan(Tone.Dark), true);
                 WaitUntil(delegate { return material.CompletedUpdates > 0; });
                 Check(requested > 0 && material.AppliedSequence == requested, "blend readiness acknowledges the successfully applied request");
+                long completed = material.CompletedUpdates;
+                long absent = material.Apply(new MaterialPlan { Enabled = true, Scene = MaterialScene.Window, Tone = Tone.Dark }, true);
+                WaitUntil(delegate { return material.CompletedUpdates > completed; });
+                Check(material.Snapshot.State == MaterialState.Waiting && backend.Restores == 0 && material.AppliedSequence < absent,
+                    "transient missing taskbar retains brush without fallback or false completion");
+                requested = material.Apply(TestPlan(Tone.Dark), true);
+                WaitUntil(delegate { return material.AppliedSequence == requested; });
+                Check(material.Snapshot.State == MaterialState.Applied && backend.Restores == 0,
+                    "taskbar reappearance resumes material without an intermediate native flash");
+                completed = material.CompletedUpdates;
                 backend.FailApply = true;
                 long failed = material.Apply(TestPlan(Tone.Light), true);
-                WaitUntil(delegate { return material.CompletedUpdates > 1; });
+                WaitUntil(delegate { return material.CompletedUpdates > completed; });
                 Check(material.AppliedSequence < failed && material.Snapshot.CanRetry, "failed material request cannot release a blend as successful");
             }
         }

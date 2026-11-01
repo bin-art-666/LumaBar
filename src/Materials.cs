@@ -348,6 +348,13 @@ namespace LumaBar
         }
         private bool ApplyCore(MaterialPlan plan, int requestedGeneration)
         {
+            // Explorer/desktop transitions can make one enumeration temporarily empty.
+            // Retain the last brush and retry on the next valid topology; do not flash a fallback.
+            if (plan.Targets.Count == 0)
+            {
+                snapshot = new MaterialSnapshot(MaterialState.Waiting, "正在等待 Windows 任务栏就绪");
+                return false;
+            }
             uint pid = backend.ExplorerPid;
             int requestedRetry = Interlocked.CompareExchange(ref retryEpoch, 0, 0);
             if (requestedRetry != seenRetryEpoch || (faulted && (pid != failurePid || plan.TopologyKey != failureTopology)))
@@ -359,7 +366,6 @@ namespace LumaBar
                     snapshot = new MaterialSnapshot(MaterialState.Fallback, "已降级为原生材质 · " + failureReason + "（可手动重试）", true);
                 return false;
             }
-            if (plan.Targets.Count == 0) throw new InvalidOperationException("未找到任务栏，请检查显示器连接。");
             if (!plan.Custom && !owned)
             { snapshot = new MaterialSnapshot(MaterialState.Native, "系统原生材质"); return true; }
             snapshot = new MaterialSnapshot(MaterialState.Connecting, "正在连接材质组件，尚未确认应用");
