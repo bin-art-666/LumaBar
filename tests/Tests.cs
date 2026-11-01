@@ -45,6 +45,39 @@ namespace LumaBar
         {
             try
             {
+                if (args.Length == 2 && args[0] == "--render-color")
+                {
+                    Application.EnableVisualStyles(); Native.EnableDpi();
+                    using (TintPicker window = new TintPicker(Color.FromArgb(32,38,48)))
+                    {
+                        window.Show(); Pump();
+                        SaveClientPreview(window,args[1]);
+                    }
+                    return 0;
+                }
+                if (args.Length == 1 && args[0] == "--preview-ui")
+                {
+                    Application.EnableVisualStyles(); Native.EnableDpi();
+                    using (StatusWindow sample = new StatusWindow { AllowClose = true })
+                    {
+                        sample.SettingsRequested += delegate { using (PreferencesWindow preferences = new PreferencesWindow(new Settings(), null, delegate { return true; })) preferences.ShowDialog(sample); };
+                        sample.ExitRequested += delegate { sample.Close(); };
+                        Application.Run(sample);
+                    }
+                    return 0;
+                }
+                if (args.Length == 2 && args[0] == "--render-menu")
+                {
+                    Application.EnableVisualStyles(); Native.EnableDpi();
+                    using (TrayApp sample = new TrayApp(new Settings(), new ThemeController(new FakeStore(), new FakeJournal()), true, true))
+                    {
+                        ContextMenuStrip menu = sample.TrayMenu;
+                        menu.Show(new Point(50,50)); Pump();
+                        using (Bitmap bitmap = new Bitmap(menu.Width,menu.Height)) { menu.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size)); bitmap.Save(args[1]); }
+                        menu.Close(); sample.ExitThread();
+                    }
+                    return 0;
+                }
                 if (args.Length == 2 && (args[0] == "--render-settings" || args[0] == "--render-rules" || args[0] == "--render-appearance"))
                 {
                     Application.EnableVisualStyles(); Native.EnableDpi();
@@ -54,8 +87,7 @@ namespace LumaBar
                         if (args[0] == "--render-rules") ((TabControl)window.Controls[0]).SelectedIndex = 1;
                         if (args[0] == "--render-appearance") ((TabControl)window.Controls[0]).SelectedIndex = 2;
                         window.Show(); Pump();
-                        using (Bitmap bitmap = new Bitmap(window.Width, window.Height))
-                        { window.DrawToBitmap(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height)); bitmap.Save(args[1]); }
+                        SaveClientPreview(window,args[1]);
                     }
                     return 0;
                 }
@@ -69,11 +101,7 @@ namespace LumaBar
                         window.UpdateSceneStatus("桌面", "任务栏区域壁纸偏亮 82%");
                         window.UpdateMaterialStatus(args[0] == "--render-fallback" ? "已降级为原生材质 · 组件连接失败（自动明暗继续）" : "玻璃效果已应用 · 显示器 1：透明玻璃 14%", args[0] == "--render-fallback");
                         window.Show(); Pump();
-                        using (Bitmap bitmap = new Bitmap(window.Width, window.Height))
-                        {
-                            window.DrawToBitmap(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
-                            bitmap.Save(args[1]);
-                        }
+                        SaveClientPreview(window,args[1]);
                     }
                     Console.WriteLine("Rendered settings window.");
                     return 0;
@@ -147,6 +175,17 @@ namespace LumaBar
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
         }
 
+        private static void SaveClientPreview(Form window,string path)
+        {
+            // DrawToBitmap synthesizes a legacy non-client frame, so document the actual client UI.
+            using(Bitmap full=new Bitmap(window.Width,window.Height))
+            {
+                window.DrawToBitmap(full,new Rectangle(Point.Empty,full.Size));
+                Point origin=window.PointToScreen(Point.Empty);
+                Rectangle client=Rectangle.Intersect(new Rectangle(origin.X-window.Left,origin.Y-window.Top,window.ClientSize.Width,window.ClientSize.Height),new Rectangle(Point.Empty,full.Size));
+                using(Bitmap cropped=full.Clone(client,full.PixelFormat))cropped.Save(path);
+            }
+        }
         private static void MaterialTests()
         {
             Settings migrated = Files.Json.Deserialize<Settings>("{\"PollMilliseconds\":350}"); migrated.Validate();

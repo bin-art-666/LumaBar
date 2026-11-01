@@ -26,7 +26,7 @@ namespace LumaBar
                 if (!acquired)
                 {
                     if (Array.IndexOf(args, "--startup") >= 0) return 0;
-                    MessageBox.Show("LumaBar 已经运行。请在系统托盘中打开它，或先退出另一个副本。", "LumaBar");
+                    Ui.Message(null, "LumaBar 已经运行。请在系统托盘中打开它，或先退出另一个副本。", "LumaBar");
                     return 2;
                 }
                 try
@@ -35,7 +35,7 @@ namespace LumaBar
                     if (Array.IndexOf(args, "--restore") >= 0)
                     {
                         bool restored = controller.Restore();
-                        MessageBox.Show(restored ? "恢复完成（或没有待恢复的更改）。" : "主题已被其他程序更改，保留当前设置。", "LumaBar");
+                        Ui.Message(null, restored ? "恢复完成（或没有待恢复的更改）。" : "主题已被其他程序更改，保留当前设置。", "LumaBar");
                         return 0;
                     }
                     Settings settings = Files.ReadSettings();
@@ -46,7 +46,7 @@ namespace LumaBar
                 catch (Exception error)
                 {
                     Files.Log(error.ToString());
-                    MessageBox.Show(error.Message + "\n\n请在可写文件夹中运行；详细信息见 LumaBar.log。", "LumaBar 无法启动", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Ui.Message(null, error.Message + "\n\n请在可写文件夹中运行；详细信息见 LumaBar.log。", "LumaBar 无法启动");
                     return 1;
                 }
                 finally { mutex.ReleaseMutex(); }
@@ -80,6 +80,7 @@ namespace LumaBar
         private long lastApplicationAt = -100000;
         private bool? timingSource;
         private long burstUntil;
+        internal ContextMenuStrip TrayMenu { get { return tray.ContextMenuStrip; } }
         internal bool StatusWindowVisible { get { return window.Visible; } }
         internal bool StatusHandleCreated { get { return window.IsHandleCreated; } }
 
@@ -98,28 +99,34 @@ namespace LumaBar
             window.PaceRequested += delegate { ShowPreferenceMenu(false); };
             window.SettingsRequested += ShowSettings;
             window.RetryRequested += RetryMaterials;
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Items.Add("打开 LumaBar", null, delegate { ShowWindow(); });
-            menu.Items.Add("设置…", null, delegate { ShowSettings(); });
+            ContextMenuStrip menu = Ui.Menu();
+            menu.Items.Add("打开 LumaBar", Ui.AppIcon.ToBitmap(), delegate { ShowWindow(); });
+            menu.Items.Add("设置…", Ui.Glyph("\uE713"), delegate { ShowSettings(); });
             pauseItem = new ToolStripMenuItem("暂停并恢复原主题", null, delegate { TogglePause(); });
+            pauseItem.Image = Ui.Glyph("\uE769");
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(pauseItem);
-            menu.Items.Add("重新同步任务栏", null, delegate { Resync(); });
-            menu.Items.Add("重试玻璃效果", null, delegate { RetryMaterials(); });
+            menu.Items.Add("重新同步任务栏", Ui.Glyph("\uE72C"), delegate { Resync(); });
+            menu.Items.Add("重试玻璃效果", Ui.Glyph("\uE790"), delegate { RetryMaterials(); });
             ToolStripMenuItem rules = new ToolStripMenuItem("应用纠正");
             rules.DropDownItems.Add("读取目标应用…");
             rules.DropDownOpening += delegate { PopulateRules(rules.DropDownItems); };
+            rules.Image = Ui.Glyph("\uE8A5");
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(rules);
             ToolStripMenuItem pace = new ToolStripMenuItem("切换节奏");
             pace.DropDownItems.Add("读取切换节奏…");
             pace.DropDownOpening += delegate { PopulatePace(pace.DropDownItems); };
+            pace.Image = Ui.Glyph("\uE916");
             menu.Items.Add(pace);
-            menu.Items.Add("打开设置文件", null, delegate
+            menu.Items.Add("打开设置文件", Ui.Glyph("\uE8A5"), delegate
             {
                 try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "settings.json") + "\""); }
                 catch (Exception error) { Report(error); }
             });
-            menu.Items.Add("退出并恢复", null, delegate { ExitThread(); });
-            tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "LumaBar · 自动适应", Visible = true, ContextMenuStrip = menu };
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("退出并恢复", Ui.Glyph("\uE8BB"), delegate { ExitThread(); });
+            tray = new NotifyIcon { Icon = Ui.AppIcon, Text = "LumaBar · 自动适应", Visible = true, ContextMenuStrip = menu };
             tray.DoubleClick += delegate { ShowWindow(); };
             timer = new System.Windows.Forms.Timer { Interval = settings.PollMilliseconds };
             timer.Tick += delegate { Tick(); };
@@ -285,7 +292,7 @@ namespace LumaBar
         }
         private void ShowPreferenceMenu(bool rules)
         {
-            ContextMenuStrip menu = new ContextMenuStrip();
+            ContextMenuStrip menu = Ui.Menu();
             if (rules) PopulateRules(menu.Items); else PopulatePace(menu.Items);
             menu.Closed += delegate { menu.Dispose(); };
             menu.Show(Cursor.Position);
@@ -459,7 +466,7 @@ namespace LumaBar
                 pauseItem.Text = "恢复自动适应";
                 Report(error);
                 ShowWindow();
-                MessageBox.Show(window, "恢复失败，程序保持暂停。请检查日志后重试退出；恢复记录会保留。", "LumaBar");
+                Ui.Message(window, "恢复失败，程序保持暂停。请检查日志后重试退出；恢复记录会保留。", "LumaBar");
                 return;
             }
             Native.WaitForThemeRefresh(1500);
@@ -496,13 +503,14 @@ namespace LumaBar
             originalStartup = !String.IsNullOrEmpty(startupCommand);
             SuspendLayout();
             Text = "LumaBar · 设置";
-            Font = new Font("Microsoft YaHei UI", 10);
-            ClientSize = new Size(660, 680);
+            Ui.Window(this);
+            Font = Ui.BodyFont;
+            ClientSize = new Size(660, 720);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(247, 249, 252);
-            TabControl tabs = new TabControl { Location = new Point(20, 20), Size = new Size(620, 588), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
+            TabControl tabs = new SettingsPages { Location = new Point(20, 108), Size = new Size(620, 548), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
             TabPage general = new TabPage("常规") { BackColor = Color.White, AutoScroll = true };
             TabPage applications = new TabPage("应用规则") { BackColor = Color.White, AutoScroll = true };
             tabs.TabPages.Add(general); tabs.TabPages.Add(applications); Controls.Add(tabs);
@@ -513,7 +521,7 @@ namespace LumaBar
             Label title = new Label { Text = "让任务栏与开始菜单自然适应明暗", Location = new Point(22, 20), Size = new Size(555, 32), Font = new Font(Font.FontFamily, 14, FontStyle.Bold) };
             general.Controls.Add(title);
             general.Controls.Add(new Label { Text = "最大化 / 全屏时跟随软件；普通窗口与桌面跟随壁纸。\n自动 / 固定浅色 / 固定深色可在主界面切换。", Location = new Point(24, 65), Size = new Size(550, 55) });
-            startup = new CheckBox { Text = "登录 Windows 后自动启动（收起到托盘）", Checked = originalStartup, Location = new Point(24, 142), Size = new Size(550, 30) };
+            startup = new ModernCheckBox { Text = "登录 Windows 后自动启动（收起到托盘）", Checked = originalStartup, Location = new Point(24, 142), Size = new Size(550, 30) };
             general.Controls.Add(startup);
             string expected = StartupRegistration.Command(Application.ExecutablePath);
             general.Controls.Add(new Label { Text = originalStartup && !String.Equals(expected, startupCommand, StringComparison.OrdinalIgnoreCase)
@@ -521,7 +529,7 @@ namespace LumaBar
                 : "建议先解压到固定文件夹。移动程序后需重新开启自启。\n若 Windows 禁用了此启动项，请在系统的“启动应用”中启用。",
                 Location = new Point(44, 179), Size = new Size(530, 65), ForeColor = Color.DimGray });
             general.Controls.Add(new Label { Text = "切换速度", Location = new Point(24, 260), Size = new Size(160, 27) });
-            pace = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(190, 257), Size = new Size(260, 30) };
+            pace = new ModernComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(190, 257), Size = new Size(260, 30) };
             pace.Items.AddRange(new object[] { "灵敏", "均衡", "舒缓", "自定义（保留当前参数）" });
             pace.SelectedIndex = 3;
             for (int i = 0; i < 3; i++)
@@ -534,7 +542,7 @@ namespace LumaBar
             general.Controls.Add(pace);
             general.Controls.Add(new Label { Text = "灵敏：响应更快　·　均衡：推荐　·　舒缓：减少切换\n速度调整同时作用于最大化、还原和窗口内容变化。", Location = new Point(24, 305), Size = new Size(550, 62), ForeColor = Color.DimGray });
             LinkLabel license = new LinkLabel { Text = "关于与开源许可（含 TranslucentTB）", Location = new Point(24, 382), Size = new Size(550, 28) };
-            license.LinkClicked += delegate { try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "THIRD_PARTY_NOTICES.md") + "\""); } catch (Exception error) { MessageBox.Show(this, error.Message, "LumaBar"); } };
+            license.LinkClicked += delegate { try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "THIRD_PARTY_NOTICES.md") + "\""); } catch (Exception error) { Ui.Message(this, error.Message, "LumaBar"); } };
             general.Controls.Add(license);
             applications.Controls.Add(new Label { Text = "填写进程名（如 Code.exe、WeChat.exe）。规则仅在最大化 / 全屏时生效。\n普通窗口仍跟随壁纸；删除规则后恢复自动识别。", Location = new Point(16, 14), Size = new Size(580, 52) });
             rules = new DataGridView { Location = new Point(16, 78), Size = new Size(576, 265), BackgroundColor = Color.White,
@@ -552,14 +560,30 @@ namespace LumaBar
             rules.DefaultValuesNeeded += delegate(object sender, DataGridViewRowEventArgs args) { args.Row.Cells[1].Value = "auto"; };
             foreach (System.Collections.Generic.KeyValuePair<string, string> entry in settings.ApplicationRules) rules.Rows.Add(entry.Key, entry.Value);
             applications.Controls.Add(rules);
-            Button remove = new Button { Text = "删除选中规则", Location = new Point(16, 355), Size = new Size(155, 34) };
+            Button remove = new ModernButton { Text = "删除选中规则", Location = new Point(16, 355), Size = new Size(155, 34) };
             remove.Click += delegate { if (rules.CurrentRow != null && !rules.CurrentRow.IsNewRow) rules.Rows.Remove(rules.CurrentRow); };
             applications.Controls.Add(remove);
-            Button apply = new Button { Text = "保存并应用", Location = new Point(366, 626), Size = new Size(140, 34) };
-            Button cancel = new Button { Text = "取消", Location = new Point(520, 626), Size = new Size(120, 34), DialogResult = DialogResult.Cancel };
+            Button apply = new ModernButton { Text = "保存并应用", Location = new Point(366, 670), Size = new Size(140, 34) };
+            Button cancel = new ModernButton { Text = "取消", Location = new Point(520, 670), Size = new Size(120, 34), DialogResult = DialogResult.Cancel };
             apply.Anchor = cancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             apply.Click += delegate { ApplySettings(startupCommand, expected); };
             Controls.Add(apply); Controls.Add(cancel); AcceptButton = apply; CancelButton = cancel;
+            ((ModernButton)apply).Primary = true;
+            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(24,20), Size = new Size(38,38), SizeMode = PictureBoxSizeMode.Zoom });
+            Controls.Add(new Label { Text = "设置", Location = new Point(76,16), Size = new Size(300,35), Font = new Font(Ui.BodyFont.FontFamily,18,FontStyle.Bold) });
+            Controls.Add(new Label { Text = "让明暗与外观，保持恰到好处。", Location = new Point(77,51), Size = new Size(510,24), ForeColor = Color.DimGray, Font = new Font(Ui.BodyFont.FontFamily,9) });
+            ModernButton[] navigation = new ModernButton[3];
+            string[] pageNames = { "常规", "应用规则", "任务栏外观" };
+            for (int index = 0; index < navigation.Length; index++)
+            {
+                int target = index;
+                navigation[index] = new ModernButton { Text = pageNames[index], Location = new Point(20 + index*210,79), Size = new Size(200,32) };
+                navigation[index].Click += delegate { tabs.SelectedIndex = target; }; Controls.Add(navigation[index]);
+            }
+            Ui.Apply(this); BackColor = Ui.Canvas;
+            Action updateNavigation = delegate { for(int index = 0; index < navigation.Length; index++) { navigation[index].Selected = index == tabs.SelectedIndex; navigation[index].BackColor = index == tabs.SelectedIndex ? Ui.AccentSoft : Ui.Canvas; navigation[index].ForeColor = index == tabs.SelectedIndex ? Ui.Accent : Ui.Muted; navigation[index].Invalidate(); } };
+            tabs.SelectedIndexChanged += delegate { updateNavigation(); }; tabs.SelectedIndex = 0; updateNavigation();
+            Shown += delegate { updateNavigation(); };
             AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
             ResumeLayout(true);
             Shown += delegate {
@@ -600,12 +624,12 @@ namespace LumaBar
                         using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
                             StartupRegistration.Write(key, previousCommand);
                     }
-                    MessageBox.Show(this, "保存未完成，请检查主界面错误信息后重试。", "LumaBar");
+                    Ui.Message(this, "保存未完成，请检查主界面错误信息后重试。", "LumaBar");
                     return;
                 }
                 DialogResult = DialogResult.OK; Close();
             }
-            catch (Exception error) { MessageBox.Show(this, error.Message, "无法保存设置", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            catch (Exception error) { Ui.Message(this, error.Message, "无法保存设置"); }
         }
         private sealed class RuleChoice
         {
@@ -642,6 +666,7 @@ namespace LumaBar
         {
             SuspendLayout();
             Text = "LumaBar";
+            Ui.Window(this);
             ClientSize = new Size(520, 550);
             MinimumSize = Size;
             MaximumSize = Size;
@@ -650,16 +675,18 @@ namespace LumaBar
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(22, 25, 32);
             ForeColor = Color.FromArgb(230, 235, 242);
-            Font = new Font("Microsoft YaHei UI", 10);
-            AddLabel("LumaBar 0.6.4", 28, 24, 310, 45, 25, Color.White);
+            Font = Ui.BodyFont;
+            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(30,27), Size = new Size(40,40), SizeMode = PictureBoxSizeMode.Zoom });
+            AddLabel("LumaBar", 82, 20, 270, 40, 23, Color.White);
+            AddLabel("0.6.5 · 随光而动", 84, 58, 260, 22, 9, Color.FromArgb(157,174,197));
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
-            AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 76, 464, 30, 11, Color.FromArgb(157, 174, 197));
+            AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 93, 464, 26, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));
             status = AddLabel("切换到其他应用后开始检测", 30, 172, 460, 32, 10, ForeColor);
             brightness = AddLabel("亮度 —", 30, 212, 460, 25, 10, Color.FromArgb(157, 174, 197));
-            meter = new ProgressBar { Location = new Point(32, 244), Size = new Size(456, 8), Maximum = 100 };
+            meter = new ModernMeter { Location = new Point(32, 244), Size = new Size(456, 8), Maximum = 100 };
             Controls.Add(meter);
-            modes = new ComboBox { Location = new Point(30, 274), Size = new Size(270, 30), DropDownStyle = ComboBoxStyle.DropDownList };
+            modes = new ModernComboBox { Location = new Point(30, 274), Size = new Size(270, 30), DropDownStyle = ComboBoxStyle.DropDownList };
             modes.Items.AddRange(new object[] { "自动适应", "固定浅色", "固定深色", "仅检测（不修改）" });
             modes.SelectedIndex = 0;
             modes.SelectedIndexChanged += delegate { if (ModeChanged != null) ModeChanged(modes.SelectedItem.ToString()); };
@@ -672,6 +699,7 @@ namespace LumaBar
             retry.Text = "重新应用任务栏外观";
             AddButton("收起到托盘", 30, 490, 222, delegate { if (HideRequested != null) HideRequested(); });
             AddButton("退出并恢复", 268, 490, 222, delegate { if (ExitRequested != null) ExitRequested(); });
+            Ui.Apply(this); BackColor = Ui.Canvas; ForeColor = Ui.Text;
             FormClosed += delegate { materialTip.Dispose(); };
             FormClosing += delegate(object sender, FormClosingEventArgs args)
             {
@@ -701,7 +729,7 @@ namespace LumaBar
         }
         private Button AddButton(string text, int x, int y, int width, Action action)
         {
-            Button button = new Button { Text = text, Location = new Point(x, y), Size = new Size(width, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(38, 45, 57), ForeColor = Color.White };
+            Button button = new ModernButton { Text = text, Location = new Point(x, y), Size = new Size(width, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(38, 45, 57), ForeColor = Color.White };
             button.FlatAppearance.BorderColor = Color.FromArgb(69, 81, 100);
             button.Click += delegate { action(); };
             Controls.Add(button);

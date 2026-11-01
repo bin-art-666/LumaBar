@@ -40,7 +40,7 @@ namespace LumaBar
     {
         private static void StabilityTests()
         {
-            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); MaterialRecoveryTests();
+            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); UiConsistencyTests(); MaterialRecoveryTests();
             using (StatusWindow window = new StatusWindow())
             {
                 int retry = 0; window.RetryRequested += delegate { retry++; };
@@ -232,6 +232,33 @@ namespace LumaBar
                 WaitUntil(delegate { return material.CompletedUpdates > completed; });
                 Check(material.AppliedSequence < failed && material.Snapshot.CanRetry, "failed material request cannot release a blend as successful");
             }
+        }
+        private static void UiConsistencyTests()
+        {
+            Settings settings = new Settings();
+            string glass = Files.Json.Serialize(settings.Glass);
+            using (StatusWindow home = new StatusWindow { AllowClose = true })
+            using (PreferencesWindow preferences = new PreferencesWindow(settings,null,delegate { return true; }))
+            {
+                Check(home.BackColor == preferences.BackColor && home.ForeColor == preferences.ForeColor, "home and settings use one application palette");
+                Check(Ui.Chrome(home) == 0 && Ui.Chrome(preferences) == 0, "Windows accepts unified rounded caption, color and border attributes before display");
+                Check(home.Icon != null && preferences.Icon != null && Ui.AppIcon.ToBitmap().Width == 32, "branded application icon loads from embedded resources");
+                TabControl pages = (TabControl)preferences.Controls[0];
+                Check(pages is SettingsPages && pages.TabCount == 3, "modern settings navigation retains all three accessible pages");
+                pages.SelectedIndex = 2;
+                Check(Files.Json.Serialize(settings.Glass) == glass, "styling and changing settings pages never mutate glass preferences");
+            }
+            using (TintPicker picker = new TintPicker(Color.FromArgb(12,34,56)))
+            {
+                TextBox hex = (TextBox)picker.Controls["HexColor"];
+                Check(hex.Text == "#0C2238", "themed color dialog preserves the existing tint exactly");
+                hex.Text = "#AABBCC";
+                Check(picker.SelectedColor.R == 170 && picker.SelectedColor.G == 187 && picker.SelectedColor.B == 204, "hex tint editing updates RGB without a legacy color dialog");
+                hex.Text = "#ABC";
+                Check(picker.SelectedColor.R == 170, "incomplete tint text cannot overwrite a valid color");
+            }
+            using (ContextMenuStrip menu = Ui.Menu())
+                Check(menu.Renderer is UiMenuRenderer && menu.Font.FontFamily.Name == Ui.BodyFont.FontFamily.Name, "tray menu shares the application typography and renderer");
         }
         private static MaterialPlan TestPlan(Tone tone)
         { return ReadabilityPolicy.Build(new GlassSettings(), MaterialScene.Desktop, tone, TwoDisplays(), "left"); }

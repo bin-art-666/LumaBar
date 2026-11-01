@@ -33,12 +33,12 @@ namespace LumaBar
         {
             edited = Files.Json.Deserialize<GlassSettings>(Files.Json.Serialize(settings));
             Size = new Size(600, 550); BackColor = Color.White; AutoScroll = true;
-            enabled = new CheckBox { Text = "启用自适应玻璃任务栏", Location = new Point(20, 12), Size = new Size(285, 28), Checked = edited.Enabled };
+            enabled = new ModernCheckBox { Text = "启用自适应玻璃任务栏", Location = new Point(20, 12), Size = new Size(285, 28), Checked = edited.Enabled };
             Controls.Add(enabled);
-            region = new CheckBox { Text = "优先判断任务栏后方壁纸的明暗", Location = new Point(20, 44), Size = new Size(550, 28), Checked = edited.TaskbarRegion };
+            region = new ModernCheckBox { Text = "优先判断任务栏后方壁纸的明暗", Location = new Point(20, 44), Size = new Size(550, 28), Checked = edited.TaskbarRegion };
             Controls.Add(region);
-            contrast = new CheckBox { Text = "复杂背景自动增强对比度（自动染色时）", Location = new Point(20, 76), Size = new Size(555, 28), Checked = edited.AutoContrast };
-            perMonitor = new CheckBox { Text = "根据各屏壁纸分别调节染色", Location = new Point(20, 108), Size = new Size(555, 28), Checked = edited.PerMonitor };
+            contrast = new ModernCheckBox { Text = "复杂背景自动增强对比度（自动染色时）", Location = new Point(20, 76), Size = new Size(555, 28), Checked = edited.AutoContrast };
+            perMonitor = new ModernCheckBox { Text = "根据各屏壁纸分别调节染色", Location = new Point(20, 108), Size = new Size(555, 28), Checked = edited.PerMonitor };
             Controls.Add(contrast); Controls.Add(perMonitor);
             AddLabel("显示器", 20, 150, 90);
             display = Combo(115, 146, 460, new object[] { new DisplayChoice(null, "所有显示器（默认）") }); display.Name = "Display";
@@ -46,7 +46,7 @@ namespace LumaBar
             for (int index = 0; index < deviceNames.Length; index++)
                 display.Items.Add(new DisplayChoice(deviceNames[index], "显示器 " + (index + 1) + (deviceNames[index] == Screen.PrimaryScreen.DeviceName ? " · 主屏" : "")));
             display.SelectedIndex = 0;
-            useOverride = new CheckBox { Text = "为选中显示器单独设置以下外观", Location = new Point(20, 184), Size = new Size(555, 28), Name = "UseOverride" };
+            useOverride = new ModernCheckBox { Text = "为选中显示器单独设置以下外观", Location = new Point(20, 184), Size = new Size(555, 28), Name = "UseOverride" };
             Controls.Add(useOverride);
             AddLabel("应用场景", 20, 228, 90);
             scene = Combo(115, 224, 195, new object[] { "桌面", "普通窗口 / 分屏", "最大化 / 全屏" });
@@ -56,15 +56,15 @@ namespace LumaBar
             preset.SelectedIndex = 0;
             AddLabel("材质", 20, 273, 90);
             material = Combo(115, 269, 195, new object[] { "系统默认", "透明玻璃", "模糊玻璃", "亚克力", "纯色" });
-            automatic = new CheckBox { Text = "染色跟随自动明暗", Location = new Point(330, 270), Size = new Size(245, 28) };
+            automatic = new ModernCheckBox { Text = "染色跟随自动明暗", Location = new Point(330, 270), Size = new Size(245, 28) };
             Controls.Add(automatic);
             opacityText = AddLabel("染色不透明度", 20, 322, 170);
             opacity = Slider(190, 314, 385);
             blurText = AddLabel("模糊强度", 20, 374, 170);
             blur = Slider(190, 366, 385);
-            color = new Button { Text = "自定义染色…", Location = new Point(20, 418), Size = new Size(160, 32) };
+            color = new ModernButton { Tag = "Tint", Text = "自定义染色…", Location = new Point(20, 418), Size = new Size(160, 32) };
             Controls.Add(color);
-            line = new CheckBox { Text = "显示任务栏顶部分隔线", Location = new Point(205, 419), Size = new Size(350, 28) };
+            line = new ModernCheckBox { Text = "显示任务栏顶部分隔线", Location = new Point(205, 419), Size = new Size(350, 28) };
             Controls.Add(line);
             preview = new Panel { Location = new Point(20, 466), Size = new Size(555, 42) };
             preview.Paint += PaintPreview; Controls.Add(preview);
@@ -104,14 +104,15 @@ namespace LumaBar
                 LoadScene(); Notify();
             };
             color.Click += delegate {
-                using (ColorDialog dialog = new ColorDialog { Color = ColorTranslator.FromHtml(CurrentAppearance.Color), FullOpen = true })
+                using (TintPicker dialog = new TintPicker(ColorTranslator.FromHtml(CurrentAppearance.Color)))
                     if (dialog.ShowDialog(this) == DialogResult.OK)
                     {
-                        CurrentAppearance.Color = "#" + dialog.Color.R.ToString("X2") + dialog.Color.G.ToString("X2") + dialog.Color.B.ToString("X2");
+                        CurrentAppearance.Color = "#" + dialog.SelectedColor.R.ToString("X2") + dialog.SelectedColor.G.ToString("X2") + dialog.SelectedColor.B.ToString("X2");
                         automatic.Checked = false; Store(); UpdateControls(); Notify();
                     }
             };
             loading = true; scene.SelectedIndex = 0; loading = false; LoadScene();
+            Font = Ui.BodyFont; BackColor = Ui.Surface; ForeColor = Ui.Text; Ui.Apply(this);
         }
         private bool OverrideEnabled
         {
@@ -186,8 +187,8 @@ namespace LumaBar
         private Label AddLabel(string text, int x, int y, int width)
         { Label label = new Label { Text = text, Location = new Point(x, y), Size = new Size(width, 28) }; Controls.Add(label); return label; }
         private ComboBox Combo(int x, int y, int width, object[] items)
-        { ComboBox box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(x, y), Size = new Size(width, 30) }; box.Items.AddRange(items); Controls.Add(box); return box; }
+        { ComboBox box = new ModernComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(x, y), Size = new Size(width, 30) }; box.Items.AddRange(items); Controls.Add(box); return box; }
         private TrackBar Slider(int x, int y, int width)
-        { TrackBar slider = new TrackBar { Minimum = 0, Maximum = 100, TickFrequency = 10, Location = new Point(x, y), Size = new Size(width, 45) }; Controls.Add(slider); return slider; }
+        { TrackBar slider = new ModernSlider { Minimum = 0, Maximum = 100, TickFrequency = 10, Location = new Point(x, y), Size = new Size(width, 45) }; Controls.Add(slider); return slider; }
     }
 }
