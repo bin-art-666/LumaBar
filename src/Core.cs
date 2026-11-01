@@ -9,12 +9,14 @@ namespace LumaBar
 
     public sealed class Settings
     {
+        public GlassSettings Glass = new GlassSettings();
+        public int TimingVersion;
         public int PollMilliseconds = 350;
         public int StableMilliseconds = 700;
         public int ContentStableMilliseconds = 1400;
         public int MinimumSwitchMilliseconds = 1800;
-        public int SourceStableMilliseconds = 180;
-        public int SourceMinimumSwitchMilliseconds = 400;
+        public int SourceStableMilliseconds = 100;
+        public int SourceMinimumSwitchMilliseconds = 250;
         public double DarkThreshold = 0.44;
         public double LightThreshold = 0.60;
         public bool HoldOwnedDialogs = true;
@@ -24,6 +26,7 @@ namespace LumaBar
 
         public void Validate()
         {
+            UpgradeTiming();
             if (PollMilliseconds < 150 || PollMilliseconds > 3000 ||
                 StableMilliseconds < 200 || StableMilliseconds > 5000 ||
                 ContentStableMilliseconds < StableMilliseconds || ContentStableMilliseconds > 8000 ||
@@ -33,6 +36,8 @@ namespace LumaBar
                 double.IsNaN(DarkThreshold) || double.IsNaN(LightThreshold) ||
                 DarkThreshold < 0.1 || LightThreshold > 0.9 || DarkThreshold >= LightThreshold)
                 throw new ArgumentException("settings.json 参数超出范围，请参考 README。");
+            if (Glass == null) Glass = new GlassSettings();
+            Glass.Validate();
             if (IgnoredProcesses == null) IgnoredProcesses = new string[0];
             Dictionary<string, string> rules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (ApplicationRules != null)
@@ -56,12 +61,25 @@ namespace LumaBar
             string name = Path.GetFileName((process ?? "").Trim());
             return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name.Substring(0, name.Length - 4) : name;
         }
+        private void UpgradeTiming()
+        {
+            if (TimingVersion != 0) return;
+            // Only migrate exact built-in presets; keep user-authored advanced timings intact.
+            if (PollMilliseconds == 200 && StableMilliseconds == 450 && ContentStableMilliseconds == 900 && MinimumSwitchMilliseconds == 1200 && SourceStableMilliseconds == 120 && SourceMinimumSwitchMilliseconds == 250)
+            { SourceStableMilliseconds = 80; SourceMinimumSwitchMilliseconds = 200; }
+            else if (PollMilliseconds == 350 && StableMilliseconds == 700 && ContentStableMilliseconds == 1400 && MinimumSwitchMilliseconds == 1800 && SourceStableMilliseconds == 180 && SourceMinimumSwitchMilliseconds == 400)
+            { SourceStableMilliseconds = 100; SourceMinimumSwitchMilliseconds = 250; }
+            else if (PollMilliseconds == 400 && StableMilliseconds == 1000 && ContentStableMilliseconds == 2000 && MinimumSwitchMilliseconds == 2600 && SourceStableMilliseconds == 300 && SourceMinimumSwitchMilliseconds == 700)
+            { SourceStableMilliseconds = 180; SourceMinimumSwitchMilliseconds = 400; }
+            TimingVersion = 1;
+        }
         public void SetPace(string pace)
         {
-            if (pace == "灵敏") { PollMilliseconds = 200; StableMilliseconds = 450; ContentStableMilliseconds = 900; MinimumSwitchMilliseconds = 1200; SourceStableMilliseconds = 120; SourceMinimumSwitchMilliseconds = 250; }
-            else if (pace == "舒缓") { PollMilliseconds = 400; StableMilliseconds = 1000; ContentStableMilliseconds = 2000; MinimumSwitchMilliseconds = 2600; SourceStableMilliseconds = 300; SourceMinimumSwitchMilliseconds = 700; }
-            else if (pace == "均衡") { PollMilliseconds = 350; StableMilliseconds = 700; ContentStableMilliseconds = 1400; MinimumSwitchMilliseconds = 1800; SourceStableMilliseconds = 180; SourceMinimumSwitchMilliseconds = 400; }
+            if (pace == "灵敏") { PollMilliseconds = 200; StableMilliseconds = 450; ContentStableMilliseconds = 900; MinimumSwitchMilliseconds = 1200; SourceStableMilliseconds = 80; SourceMinimumSwitchMilliseconds = 200; }
+            else if (pace == "舒缓") { PollMilliseconds = 400; StableMilliseconds = 1000; ContentStableMilliseconds = 2000; MinimumSwitchMilliseconds = 2600; SourceStableMilliseconds = 180; SourceMinimumSwitchMilliseconds = 400; }
+            else if (pace == "均衡") { PollMilliseconds = 350; StableMilliseconds = 700; ContentStableMilliseconds = 1400; MinimumSwitchMilliseconds = 1800; SourceStableMilliseconds = 100; SourceMinimumSwitchMilliseconds = 250; }
             else throw new ArgumentException("未知切换节奏");
+            TimingVersion = 1;
         }
     }
 
@@ -122,7 +140,7 @@ namespace LumaBar
         {
             if (trackSource)
             {
-                if (!lastSource.HasValue || lastSource.Value != wallpaperSource)
+                if (!lastSource.HasValue || lastSource.Value != wallpaperSource || window != observedWindow)
                 { fastWindow = window; fastUntil = now + 2000; }
                 lastSource = wallpaperSource;
             }

@@ -30,7 +30,7 @@ namespace LumaBar
         public void Save(SessionRecord record) { saved = Files.Json.Serialize(record); }
         public void Delete() { saved = null; }
     }
-    internal static class Tests
+    internal static partial class Tests
     {
         private static int passed;
         private static void Check(bool result, string name)
@@ -44,26 +44,29 @@ namespace LumaBar
         {
             try
             {
-                if (args.Length == 2 && (args[0] == "--render-settings" || args[0] == "--render-rules"))
+                if (args.Length == 2 && (args[0] == "--render-settings" || args[0] == "--render-rules" || args[0] == "--render-appearance"))
                 {
                     Application.EnableVisualStyles(); Native.EnableDpi();
                     Settings preview = new Settings(); preview.ApplicationRules.Add("Code", "dark"); preview.ApplicationRules.Add("WeChat", "light");
                     using (PreferencesWindow window = new PreferencesWindow(preview, null, delegate { return true; }))
                     {
                         if (args[0] == "--render-rules") ((TabControl)window.Controls[0]).SelectedIndex = 1;
+                        if (args[0] == "--render-appearance") ((TabControl)window.Controls[0]).SelectedIndex = 2;
                         window.Show(); Pump();
                         using (Bitmap bitmap = new Bitmap(window.Width, window.Height))
                         { window.DrawToBitmap(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height)); bitmap.Save(args[1]); }
                     }
                     return 0;
                 }
-                if (args.Length == 2 && args[0] == "--render")
+                if (args.Length == 2 && (args[0] == "--render" || args[0] == "--render-fallback"))
                 {
                     Application.EnableVisualStyles();
                     Native.EnableDpi();
                     using (StatusWindow window = new StatusWindow())
                     {
-                        window.UpdateStatus("活动窗口：Code", 0.14, Tone.Dark);
+                        window.UpdateStatus("桌面壁纸：优先分析任务栏所在区域", 0.82, Tone.Light, "壁纸");
+                        window.UpdateSceneStatus("桌面", "任务栏区域壁纸偏亮 82%");
+                        window.UpdateMaterialStatus(args[0] == "--render-fallback" ? "已降级为原生材质 · 组件连接失败（自动明暗继续）" : "玻璃效果已应用 · 显示器 1：透明玻璃 14%", args[0] == "--render-fallback");
                         window.Show(); Pump();
                         using (Bitmap bitmap = new Bitmap(window.Width, window.Height))
                         {
@@ -75,7 +78,34 @@ namespace LumaBar
                     return 0;
                 }
                 if (args.Length == 1 && args[0] == "--native") { NativeTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--events") { EventNativeTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--refresh-speed") { RefreshSpeedTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--readability") { ReadabilityNativeTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--wallpaper-cache")
+                {
+                    Rectangle screen = Screen.PrimaryScreen.Bounds;
+                    WindowSample first = WallpaperSampler.ReadTaskbar(screen);
+                    WindowSample cached = WallpaperSampler.ReadTaskbar(screen);
+                    Check(first.Valid && cached.Valid && first.DecisionContext == cached.DecisionContext, "unchanged wallpaper reuses its decision context");
+                    WallpaperSampler.Invalidate();
+                    WindowSample refreshed = WallpaperSampler.ReadTaskbar(screen);
+                    Check(refreshed.Valid && refreshed.DecisionContext != first.DecisionContext, "wallpaper notification invalidates cache and starts a fresh source confirmation");
+                    Check(Math.Abs(refreshed.Brightness - first.Brightness) < .001, "cache invalidation preserves taskbar-region wallpaper mapping");
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--shell") { ShellTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--materials") { MaterialsShellTest(); return 0; }
+                if (args.Length == 1 && args[0] == "--material-watchdog") { MaterialWatchdogTest(); return 0; }
+                if (args.Length == 2 && args[0] == "--material-child")
+                {
+                    MaterialController child = new MaterialController();
+                    GlassSettings glass = new GlassSettings();
+                    glass.Desktop = new TaskbarAppearance { Material = "opaque", AutomaticColor = false, Color = args[1] == "light" ? "#FFFFFF" : "#000000" };
+                    ApplyAndWait(child, glass, Tone.Light);
+                    Console.WriteLine("MATERIAL_READY"); Console.Out.Flush(); Console.ReadLine();
+                    // Deliberately bypass Dispose to exercise the native process-death watchdog.
+                    Environment.Exit(0);
+                }
                 if (args.Length == 1 && args[0] == "--wallpaper")
                 {
                     Native.EnableDpi();
@@ -106,10 +136,154 @@ namespace LumaBar
                 WallpaperTests();
                 SourceSpeedTests();
                 PreferencesTests();
+                MaterialTests();
+                EventSpeedTests();
+                StabilityTests();
                 Console.WriteLine(passed + " checks passed. No real system settings were modified.");
                 return 0;
             }
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+        }
+
+        private static void MaterialTests()
+        {
+            Settings migrated = Files.Json.Deserialize<Settings>("{\"PollMilliseconds\":350}"); migrated.Validate();
+            Check(migrated.Glass.Enabled && migrated.Glass.TaskbarRegion, "legacy settings receive adaptive glass and taskbar-region defaults");
+            Check(migrated.Glass.Desktop.Material == "blur" && migrated.Glass.Maximized.Material == "normal", "desktop glass preserves native maximized default");
+            migrated.Glass.Desktop.TintOpacity = 51;
+            Check(migrated.Glass.Window.TintOpacity == 22, "scene configurations do not share mutable settings");
+            Settings copy = Files.Json.Deserialize<Settings>(Files.Json.Serialize(migrated)); copy.Validate();
+            Check(copy.Glass.Desktop.TintOpacity == 51 && copy.Glass.Maximized.ShowLine, "glass scene parameters survive settings round trip");
+            TaskbarAppearance custom = new TaskbarAppearance { AutomaticColor = false, Color = "#123456", TintOpacity = 100 };
+            Check(custom.Abgr(Tone.Light) == 0xFF563412U, "custom RGB tint is converted to native ABGR correctly");
+            custom.TintOpacity = 0;
+            Check((custom.Abgr(Tone.Dark) >> 24) == 0, "clear tint can be fully transparent");
+            custom.Material = "opaque";
+            Check((custom.Abgr(Tone.Dark) >> 24) == 255, "opaque material ignores transparency slider");
+            custom.AutomaticColor = true;
+            Check((custom.Abgr(Tone.Light) & 255) > (custom.Abgr(Tone.Dark) & 255), "automatic glass tint follows system light and dark tone");
+            bool rejected = false;
+            try { new TaskbarAppearance { Color = "#wrong!" }.Validate(); } catch (ArgumentException) { rejected = true; }
+            Check(rejected, "malformed tint cannot reach the native component");
+            rejected = false;
+            try { new TaskbarAppearance { BlurRadius = 101 }.Validate(); } catch (ArgumentException) { rejected = true; }
+            Check(rejected, "out-of-range blur is rejected");
+            Check(TrayApp.SceneFor(new WindowSample { IsWallpaper = true, IsDesktop = true }) == MaterialScene.Desktop &&
+                TrayApp.SceneFor(new WindowSample { IsWallpaper = true }) == MaterialScene.Window &&
+                TrayApp.SceneFor(new WindowSample { Valid = true }) == MaterialScene.Maximized, "desktop, floating and expanded samples route to separate material scenes");
+            Check(TrayApp.SceneFor(new WindowSample { Scene = MaterialScene.Maximized }) == MaterialScene.Maximized,
+                "ignored or held maximized applications still select maximized material");
+            GlassSettings original = new GlassSettings();
+            using (AppearanceEditor editor = new AppearanceEditor(original))
+            {
+                ((ComboBox)editor.Controls["Preset"]).SelectedIndex = 1;
+                Check(original.Desktop.Material == "blur" && editor.Value.Desktop.Material == "clear", "preview edits do not mutate saved settings before apply");
+                ((ComboBox)editor.Controls["Scene"]).SelectedIndex = 2;
+                ((ComboBox)editor.Controls["Preset"]).SelectedIndex = 3;
+                Check(editor.Value.Desktop.Material == "clear" && editor.Value.Maximized.Material == "acrylic", "switching editor scenes preserves independent unsaved choices");
+            }
+            using (Bitmap image = new Bitmap(100, 100))
+            {
+                using (Graphics graphics = Graphics.FromImage(image)) { graphics.Clear(Color.Black); graphics.FillRectangle(Brushes.White, 0, 90, 100, 10); }
+                WallpaperDescription description = new WallpaperDescription { Position = 2, Monitor = new Rectangle(0, 0, 100, 100), VirtualDesktop = new Rectangle(0, 0, 100, 100) };
+                Check(WallpaperAnalyzer.Analyze(image, description) < .1, "mixed wallpaper whole-screen median is dark");
+                description.SampleArea = new Rectangle(0, 90, 100, 10);
+                Check(WallpaperAnalyzer.Analyze(image, description) > .9, "bright taskbar strip overrides dark upper wallpaper");
+                description.Monitor = new Rectangle(-100, 0, 100, 100); description.VirtualDesktop = description.Monitor;
+                description.SampleArea = new Rectangle(-100, 90, 100, 10);
+                Check(WallpaperAnalyzer.Analyze(image, description) > .9, "taskbar strip mapping supports monitors with negative coordinates");
+            }
+        }
+
+        private static void MaterialsShellTest()
+        {
+            Application.EnableVisualStyles(); Native.EnableDpi();
+            using (Mutex mutex = new Mutex(false, @"Local\LumaBar-" + WindowsIdentity.GetCurrent().User.Value))
+            {
+                bool acquired;
+                try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
+                if (!acquired) throw new Exception("Exit LumaBar before running material regression.");
+                try
+                {
+                    ThemeValue before = new RegistryThemeStore().Read();
+                    using (MaterialController materials = new MaterialController())
+                    {
+                        GlassSettings glass = new GlassSettings();
+                        glass.Desktop = new TaskbarAppearance { Material = "opaque", AutomaticColor = false, Color = "#000000", ShowLine = false };
+                        ApplyAndWait(materials, glass, Tone.Dark); Settle();
+                        double? dark = Native.TaskbarBrightness();
+                        glass.Desktop.Color = "#FFFFFF";
+                        ApplyAndWait(materials, glass, Tone.Light); Settle();
+                        double? light = Native.TaskbarBrightness();
+                        Console.WriteLine("Material pixel brightness: dark={0}, light={1}", dark, light);
+                        Check(dark.HasValue && light.HasValue && light.Value - dark.Value > .5, "native glass backend actually changes taskbar pixels");
+                        glass.Desktop.Material = "blur"; glass.Desktop.TintOpacity = 22;
+                        ApplyAndWait(materials, glass, Tone.Light);
+                        Check(materials.Status.StartsWith("玻璃效果已应用"), "custom blur brush accepted by Explorer");
+                        glass.Desktop.Material = "acrylic";
+                        ApplyAndWait(materials, glass, Tone.Light);
+                        Check(materials.Status.StartsWith("玻璃效果已应用"), "acrylic brush accepted by Explorer");
+                        ThemeController theme = new ThemeController(new RegistryThemeStore(), new FileJournal());
+                        theme.Restore();
+                        try
+                        {
+                            glass.Desktop.Material = "blur"; glass.Desktop.AutomaticColor = true;
+                            theme.Apply(Tone.Dark); ApplyAndWait(materials, glass, Tone.Dark); Settle();
+                            Check(new RegistryThemeStore().Read().Tone == Tone.Dark, "glass and light-dark controller work together in dark mode");
+                            theme.Apply(Tone.Light); ApplyAndWait(materials, glass, Tone.Light); Settle();
+                            Check(new RegistryThemeStore().Read().Tone == Tone.Light && materials.Status.StartsWith("玻璃效果已应用"), "glass can be reapplied after the system switches to light mode");
+                        }
+                        finally { materials.Restore(); theme.Restore(); }
+                        materials.Restore(); Settle();
+                        Check(materials.Status == "系统原生材质", "taskbar materials restore before exit");
+                    }
+                    Check(before.Same(new RegistryThemeStore().Read()), "material regression does not change system theme preference");
+                }
+                finally { mutex.ReleaseMutex(); }
+            }
+        }
+        private static void ApplyAndWait(MaterialController controller, GlassSettings glass, Tone tone)
+        {
+            long completed = controller.CompletedUpdates;
+            controller.Apply(glass, MaterialScene.Desktop, tone, true);
+            System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
+            while (controller.CompletedUpdates == completed && wait.ElapsedMilliseconds < 45000) { Application.DoEvents(); Thread.Sleep(40); }
+            if (controller.CompletedUpdates == completed || controller.Status.StartsWith("玻璃效果未应用")) throw new Exception(controller.Status);
+        }
+
+        private static void MaterialWatchdogTest()
+        {
+            Native.EnableDpi();
+            double? baseline = Native.TaskbarBrightness();
+            if (!baseline.HasValue) throw new Exception("Taskbar pixels unavailable.");
+            bool light = baseline.Value < .5;
+            System.Diagnostics.ProcessStartInfo info = new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath,
+                "--material-child " + (light ? "light" : "dark")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardInput = true, RedirectStandardError = true };
+            using (System.Diagnostics.Process child = System.Diagnostics.Process.Start(info))
+            {
+                try
+                {
+                    System.Threading.Tasks.Task<string> ready = child.StandardOutput.ReadLineAsync();
+                    System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
+                    while (!ready.IsCompleted && wait.ElapsedMilliseconds < 45000) { Application.DoEvents(); Thread.Sleep(50); }
+                    if (!ready.IsCompleted || ready.Result != "MATERIAL_READY") throw new Exception("Watchdog child failed: " + (child.HasExited ? child.StandardError.ReadToEnd() : "timeout"));
+                    Settle();
+                    double? changed = Native.TaskbarBrightness();
+                    Check(changed.HasValue && Math.Abs(changed.Value - baseline.Value) > .3, "watchdog child visibly changes taskbar material");
+                    // End the child without running its restoration code.
+                    child.StandardInput.WriteLine("exit"); child.StandardInput.Flush();
+                    if (!child.WaitForExit(5000)) throw new Exception("Watchdog child did not exit.");
+                    double? restored = null;
+                    for (int i = 0; i < 50; i++)
+                    {
+                        Application.DoEvents(); Thread.Sleep(100); restored = Native.TaskbarBrightness();
+                        if (restored.HasValue && Math.Abs(restored.Value - baseline.Value) < .08) break;
+                    }
+                    Console.WriteLine("Watchdog taskbar brightness: before={0}, after={1}", baseline, restored);
+                    Check(restored.HasValue && Math.Abs(restored.Value - baseline.Value) < .08, "native watchdog restores original taskbar when managed process exits without cleanup");
+                }
+                finally { if (!child.HasExited) { child.Kill(); child.WaitForExit(5000); } }
+            }
         }
 
         private static void PreferencesTests()
@@ -131,7 +305,7 @@ namespace LumaBar
                 grid.Rows.Clear(); grid.Rows.Add("WeChat.exe", "light");
                 window.Show(); Pump();
                 foreach (Control control in window.Controls) if (control is Button && control.Text == "保存并应用") ((Button)control).PerformClick();
-                Check(saved && current.SourceStableMilliseconds == 120, "settings save applies selected speed");
+                Check(saved && current.SourceStableMilliseconds == 80, "settings save applies selected speed");
                 Check(current.RuleFor("wechat") == "light" && current.RuleFor("Code") == "auto", "settings grid adds and removes normalized rules");
                 Check(current.DarkThreshold == .40, "settings keeps advanced parameters outside the editor");
             }
@@ -416,7 +590,8 @@ namespace LumaBar
 
         private static void SourceSpeedTests()
         {
-            Settings settings = new Settings();
+            // Retain the 0.5 timing regression as well as the faster preset tests below.
+            Settings settings = new Settings { TimingVersion = 1, SourceStableMilliseconds = 180, SourceMinimumSwitchMilliseconds = 400 };
             DecisionEngine engine = new DecisionEngine(settings);
             long paper = long.MinValue;
             engine.Observe(paper, 1, Tone.Dark, 0, true, true);
@@ -451,8 +626,116 @@ namespace LumaBar
             Check(engine.Observe(42, 0.95, Tone.Dark, 2700, false, false) == Tone.Light, "stable content eventually switches with normal protection");
             Settings legacy = Files.Json.Deserialize<Settings>("{\"PollMilliseconds\":350,\"StableMilliseconds\":700,\"MinimumSwitchMilliseconds\":1800}");
             legacy.Validate();
-            Check(legacy.SourceStableMilliseconds == 180 && legacy.SourceMinimumSwitchMilliseconds == 400,
+            Check(legacy.SourceStableMilliseconds == 100 && legacy.SourceMinimumSwitchMilliseconds == 250,
                 "old settings automatically gain fast source defaults");
+        }
+
+        private static void EventSpeedTests()
+        {
+            ProbeSchedule schedule = new ProbeSchedule();
+            Check(schedule.Interval(0, 350) == 350, "idle probing retains economical polling interval");
+            Check(schedule.Signal(10) && schedule.Interval(10, 350) == 50, "window event requests an immediate probe and 50ms burst");
+            Check(!schedule.Signal(25) && !schedule.Signal(60), "event storms are coalesced rather than restarting every timer tick");
+            Check(schedule.Interval(1061, 350) == 350, "burst ends after window events settle");
+            schedule.Observe(2000, false, 41);
+            schedule.Observe(3300, false, 42);
+            Check(schedule.Interval(3300, 350) == 50, "switching two maximized apps also starts fast probing");
+            Check(!WindowEvents.Relevant(0x800B, new IntPtr(1), -4, 0, new IntPtr(1)) &&
+                !WindowEvents.Relevant(0x800B, new IntPtr(2), 0, 0, new IntPtr(1)), "background-window and child-content geometry events are ignored");
+            Check(WindowEvents.Relevant(0x800B, new IntPtr(1), 0, 0, new IntPtr(1)), "foreground window resize can trigger fast probing");
+
+            Settings balanced = new Settings(); balanced.Validate();
+            DecisionEngine engine = new DecisionEngine(balanced);
+            engine.Observe(1, .1, Tone.Light, 0, false, false);
+            Check(engine.Observe(1, .1, Tone.Light, 50, false, false) == null, "new fast path still rejects a single short bright-dark transition");
+            Check(engine.Observe(1, .1, Tone.Light, 100, false, false) == Tone.Dark, "balanced source confirms after 100ms instead of 180ms");
+            engine.Observe(2, 1, Tone.Dark, 150, false, false);
+            Check(engine.Observe(2, 1, Tone.Dark, 250, false, false) == null, "faster maximized app changes still respect source cooldown");
+            Check(engine.Observe(2, 1, Tone.Dark, 350, false, false) == Tone.Light, "different maximized app avoids the old 700ms normal dwell");
+            engine.Observe(2, 1, Tone.Light, 700, false, false);
+            engine.Observe(2, 1, Tone.Light, 1050, false, false);
+            engine.Observe(2, 1, Tone.Light, 1400, false, false);
+            engine.Observe(2, .1, Tone.Light, 1750, false, false);
+            engine.Observe(2, .1, Tone.Light, 1800, false, false);
+            engine.Observe(2, .1, Tone.Light, 1850, false, false);
+            Check(engine.Observe(2, .1, Tone.Light, 2000, false, false) == null, "rapid probing does not shorten settled-window content protection");
+
+            Settings sensitive = new Settings(); sensitive.SetPace("灵敏");
+            engine = new DecisionEngine(sensitive);
+            engine.Observe(3, 1, Tone.Dark, 0, true, true);
+            Check(engine.Observe(3, 1, Tone.Dark, 50, true, true) == null && engine.Observe(3, 1, Tone.Dark, 100, true, true) == Tone.Light,
+                "sensitive wallpaper path confirms at the next 50ms sample after 80ms dwell");
+            string previous = "{\"PollMilliseconds\":200,\"StableMilliseconds\":450,\"ContentStableMilliseconds\":900,\"MinimumSwitchMilliseconds\":1200,\"SourceStableMilliseconds\":120,\"SourceMinimumSwitchMilliseconds\":250,\"Glass\":{\"Desktop\":{\"Material\":\"clear\",\"TintOpacity\":14}}}";
+            Settings migrated = Files.Json.Deserialize<Settings>(previous); migrated.Validate();
+            Check(migrated.SourceStableMilliseconds == 80 && migrated.SourceMinimumSwitchMilliseconds == 200 && migrated.Glass.Desktop.TintOpacity == 14,
+                "existing sensitive preset upgrades while preserving user's glass appearance");
+            Settings custom = new Settings { SourceStableMilliseconds = 230, SourceMinimumSwitchMilliseconds = 550 }; custom.Validate();
+            Check(custom.SourceStableMilliseconds == 230 && custom.SourceMinimumSwitchMilliseconds == 550, "custom advanced source timing is preserved");
+            Settings roundTrip = Files.Json.Deserialize<Settings>(Files.Json.Serialize(migrated)); roundTrip.Validate();
+            Check(roundTrip.TimingVersion == 1 && roundTrip.SourceStableMilliseconds == 80, "timing migration is stable after save and reload");
+
+            // Compare first-decision timing on the same deterministic input and 50ms cadence.
+            Console.WriteLine("Source confirmation at 50ms cadence: old balanced={0}ms, new balanced={1}ms", ConfirmAt(180), ConfirmAt(100));
+        }
+        private static int ConfirmAt(int dwell)
+        {
+            DecisionEngine engine = new DecisionEngine(new Settings { SourceStableMilliseconds = dwell });
+            for (int time = 0; time <= 1000; time += 50)
+                if (engine.Observe(1, .1, Tone.Light, time, false, false) == Tone.Dark) return time;
+            throw new Exception("No source decision");
+        }
+
+        [DllImport("user32.dll")] private static extern void NotifyWinEvent(uint eventType, IntPtr window, int objectId, int childId);
+        private static void EventNativeTest()
+        {
+            Application.EnableVisualStyles(); Native.EnableDpi();
+            ThemeValue before = new RegistryThemeStore().Read();
+            using (NotificationWindow window = new NotificationWindow())
+            {
+                IntPtr handle = window.Handle;
+                int callbacks = 0;
+                using (WindowEvents events = new WindowEvents(delegate { callbacks++; }, true))
+                {
+                    Check(events.Available, "all foreground, minimize and geometry event hooks register");
+                    System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
+                    // Send a synthetic accessibility event; this does not activate a window or change theme.
+                    NotifyWinEvent(0x0003, handle, 0, 0);
+                    while (callbacks == 0 && wait.ElapsedMilliseconds < 3000) { Application.DoEvents(); Thread.Sleep(5); }
+                    Console.WriteLine("Native event delivery elapsed: {0}ms", wait.ElapsedMilliseconds);
+                    Check(callbacks > 0, "out-of-context window events reach the UI message pump");
+                }
+                int afterDispose = callbacks;
+                NotifyWinEvent(0x0003, handle, 0, 0); Pump();
+                Check(callbacks == afterDispose, "disposed window event hooks stop delivering callbacks");
+                using (WindowEvents events = new WindowEvents(delegate { callbacks++; }))
+                {
+                    NotifyWinEvent(0x0003, handle, 0, 0); Pump();
+                    Check(callbacks == afterDispose, "production event hooks skip LumaBar's own UI events");
+                }
+            }
+            Check(before.Same(new RegistryThemeStore().Read()), "event hook regression does not change system theme");
+        }
+
+        private static void RefreshSpeedTest()
+        {
+            Application.EnableVisualStyles(); Native.EnableDpi();
+            ThemeValue before = new RegistryThemeStore().Read();
+            using (NotificationWindow receiver = new NotificationWindow())
+            {
+                IntPtr handle = receiver.Handle;
+                System.Diagnostics.Stopwatch foreground = System.Diagnostics.Stopwatch.StartNew();
+                Native.RefreshTaskbars();
+                Console.WriteLine("Taskbar-first synchronous refresh elapsed: {0}ms", foreground.ElapsedMilliseconds);
+                // Multiple refreshes must coalesce safely and still notify normal windows.
+                Native.RefreshTaskbars(); Native.RefreshTaskbars();
+                System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
+                while (!Native.WaitForThemeRefresh(0) && wait.ElapsedMilliseconds < 5000) { Application.DoEvents(); Thread.Sleep(5); }
+                Application.DoEvents();
+                Check(Native.WaitForThemeRefresh(0), "coalesced background theme notifications finish within their bounded budget");
+                Check(receiver.Sections.Contains("ImmersiveColorSet"), "normal windows still receive theme notification from the background worker");
+                Check(!receiver.Sections.Contains("TraySettings"), "background normal-window notification keeps the original message contract");
+            }
+            Check(before.Same(new RegistryThemeStore().Read()), "refresh-speed test leaves system theme preference unchanged");
         }
 
         private static void ShellTest()

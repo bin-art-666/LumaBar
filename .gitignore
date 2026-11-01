@@ -7,3 +7,6 @@ tests/bin/
 .vs/
 bin/
 obj/
+
+dist/
+native/upstream*/

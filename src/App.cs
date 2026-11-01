@@ -57,6 +57,10 @@ namespace LumaBar
     internal sealed class TrayApp : ApplicationContext
     {
         private Settings settings;
+        private MaterialController materials;
+        private MaterialScene materialScene = MaterialScene.Desktop;
+        private readonly SceneCoordinator sceneCoordinator = new SceneCoordinator();
+        private GlassSettings previewGlass;
         private readonly ThemeController controller;
         private DecisionEngine engine;
         private readonly NotifyIcon tray;
@@ -71,8 +75,8 @@ namespace LumaBar
         private string mode = "自动适应";
         private string lastApplication;
         private long lastApplicationAt = -100000;
-        private bool? timingSource;
-        private long burstUntil;
+        private ProbeSchedule probeSchedule = new ProbeSchedule();
+        private readonly WindowEvents windowEvents;
         internal bool StatusWindowVisible { get { return window.Visible; } }
         internal bool StatusHandleCreated { get { return window.IsHandleCreated; } }
 
@@ -90,12 +94,14 @@ namespace LumaBar
             window.RulesRequested += delegate { ShowPreferenceMenu(true); };
             window.PaceRequested += delegate { ShowPreferenceMenu(false); };
             window.SettingsRequested += ShowSettings;
+            window.RetryRequested += RetryMaterials;
             ContextMenuStrip menu = new ContextMenuStrip();
             menu.Items.Add("打开 LumaBar", null, delegate { ShowWindow(); });
             menu.Items.Add("设置…", null, delegate { ShowSettings(); });
             pauseItem = new ToolStripMenuItem("暂停并恢复原主题", null, delegate { TogglePause(); });
             menu.Items.Add(pauseItem);
             menu.Items.Add("重新同步任务栏", null, delegate { Resync(); });
+            menu.Items.Add("重试玻璃效果", null, delegate { RetryMaterials(); });
             ToolStripMenuItem rules = new ToolStripMenuItem("应用纠正");
             rules.DropDownItems.Add("读取目标应用…");
             rules.DropDownOpening += delegate { PopulateRules(rules.DropDownItems); };
@@ -117,10 +123,14 @@ namespace LumaBar
             SystemEvents.SessionSwitch += OnSessionSwitch;
             SystemEvents.SessionEnding += OnSessionEnding;
             SystemEvents.PowerModeChanged += OnPowerMode;
+            SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+            windowEvents = new WindowEvents(RequestFastProbe);
+            if (!windowEvents.Available) Files.Log("Some window event hooks are unavailable; timer polling remains active.");
             // Create a handle for session callbacks even when logging in to tray.
             IntPtr handle = window.Handle;
             if (!startHidden) window.Show();
             controller.Refresh(); // Also repair stale visuals when the registry already matches.
+            RequestFastProbe();
             timer.Start();
             Files.Log("Started. No images or window titles are recorded.");
         }
@@ -128,7 +138,7 @@ namespace LumaBar
         private void ShowWindow() { window.Show(); window.WindowState = FormWindowState.Normal; window.Activate(); }
         private void Resync()
         {
-            try { controller.Refresh(); window.UpdateStatus("已重新发送主题与任务栏设置通知", null, controller.Current.Tone); }
+            try { controller.Refresh(); ApplyMaterials(true); window.UpdateStatus("已重新发送主题与任务栏设置通知", null, controller.Current.Tone); }
             catch (Exception error) { Report(error); }
         }
         private bool SavePreferences(Action<Settings> change)
@@ -140,19 +150,70 @@ namespace LumaBar
                 Settings next = Files.Json.Deserialize<Settings>(Files.Json.Serialize(settings));
                 next.Validate(); change(next); next.Validate(); Files.SaveSettings(next);
                 settings = next; engine = new DecisionEngine(settings);
-                timingSource = null; burstUntil = 0;
+                probeSchedule = new ProbeSchedule();
                 timer.Interval = settings.PollMilliseconds;
                 window.UpdateStatus("设置已保存，立即生效", null, controller.Current.Tone);
                 return true;
             }
             catch (Exception error) { Report(error); return false; }
         }
+        private void ApplyMaterials(bool force = false)
+        {
+            if (mode == "仅检测（不修改）" || paused || sessionLocked || suspended || SystemInformation.HighContrast || !sceneCoordinator.Ready) return;
+            GlassSettings glass = previewGlass ?? settings.Glass;
+            if (materials == null && glass.Enabled) materials = new MaterialController();
+            if (materials != null) materials.Apply(glass, materialScene, controller.Current.Tone, force);
+        }
+        private void RestoreMaterials() { if (materials != null) materials.Restore(); }
+        internal static void RestoreBoth(Action material, Action theme)
+        {
+            System.Collections.Generic.List<Exception> errors = new System.Collections.Generic.List<Exception>();
+            try { material(); } catch (Exception error) { errors.Add(error); }
+            try { theme(); } catch (Exception error) { errors.Add(error); }
+            if (errors.Count > 0) throw new AggregateException("部分恢复未完成，请重试。", errors);
+        }
+        private void RestoreManagedState() { RestoreBoth(RestoreMaterials, delegate { controller.Restore(); }); }
+        private void RetryMaterials()
+        {
+            if (paused || sessionLocked || suspended || SystemInformation.HighContrast)
+            {
+                try { RestoreManagedState(); } catch (Exception error) { Report(error); }
+                UpdateMaterialStatus(); return;
+            }
+            if (materials != null) materials.Retry();
+            ApplyMaterials(true);
+            UpdateMaterialStatus();
+        }
+        private void CommitTheme(Tone tone)
+        {
+            if (tone != controller.Current.Tone && materials != null) materials.InvalidatePending();
+            controller.Apply(tone);
+        }
+        private void UpdateMaterialStatus()
+        {
+            if (mode == "仅检测（不修改）") { window.UpdateMaterialStatus("仅检测 · 不修改材质", false, false); return; }
+            if (materials == null) { window.UpdateMaterialStatus("尚未应用 / 系统原生", false); return; }
+            MaterialSnapshot state = materials.Snapshot;
+            window.UpdateMaterialStatus(state.Message, state.CanRetry, state.CanRetry || (!paused && !sessionLocked && !suspended && !SystemInformation.HighContrast));
+        }
+        private Tone? DesiredTone(WindowSample sample, Tone current)
+        {
+            if (!sample.Valid) return null;
+            double value = sample.DecisionBrightness;
+            if (value <= settings.DarkThreshold) return Tone.Dark;
+            if (value >= settings.LightThreshold) return Tone.Light;
+            return current;
+        }
         private void ShowSettings()
         {
             try
             {
                 using (PreferencesWindow preferences = new PreferencesWindow(settings, StartupRegistration.Read(), SavePreferences))
-                    preferences.ShowDialog(window);
+                {
+                    preferences.AppearancePreview += delegate(GlassSettings glass) { previewGlass = glass; ApplyMaterials(true); };
+                    try { preferences.ShowDialog(window); }
+                    finally { previewGlass = null; engine = new DecisionEngine(settings); probeSchedule = new ProbeSchedule(); RequestFastProbe(); ApplyMaterials(true); }
+                }
             }
             catch (Exception error) { Report(error); }
         }
@@ -217,19 +278,29 @@ namespace LumaBar
                 catch (InvalidOperationException) { }
             }
         }
+        private void RequestFastProbe()
+        {
+            if (exiting || paused || sessionLocked || suspended || timer == null) return;
+            if (probeSchedule.Signal(clock.ElapsedMilliseconds)) timer.Interval = 1;
+        }
+        private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs args)
+        {
+            if (args.Category == UserPreferenceCategory.Desktop)
+                Dispatch(delegate { WallpaperSampler.Invalidate(); RequestFastProbe(); });
+        }
         private void OnSessionSwitch(object sender, SessionSwitchEventArgs args)
         {
             if (args.Reason == SessionSwitchReason.SessionLock)
                 Dispatch(delegate { sessionLocked = true; ReleaseForIdle(); });
             else if (args.Reason == SessionSwitchReason.SessionUnlock)
-                Dispatch(delegate { sessionLocked = false; engine.Reset(); });
+                Dispatch(delegate { sessionLocked = false; engine.Reset(); RequestFastProbe(); });
         }
         private void OnPowerMode(object sender, PowerModeChangedEventArgs args)
         {
             if (args.Mode == PowerModes.Suspend)
                 Dispatch(delegate { suspended = true; ReleaseForIdle(); });
             else if (args.Mode == PowerModes.Resume)
-                Dispatch(delegate { suspended = false; engine.Reset(); });
+                Dispatch(delegate { suspended = false; engine.Reset(); WallpaperSampler.Invalidate(); RequestFastProbe(); });
         }
         private void OnSessionEnding(object sender, SessionEndingEventArgs args)
         {
@@ -243,8 +314,8 @@ namespace LumaBar
         }
         private void ReleaseForIdle()
         {
-            engine.Reset();
-            try { controller.Restore(); }
+            engine.Reset(); sceneCoordinator.ResetPending();
+            try { RestoreManagedState(); }
             catch (Exception error) { paused = true; Report(error); }
         }
 
@@ -252,11 +323,12 @@ namespace LumaBar
         {
             try
             {
-                if (!paused) controller.Restore();
-                paused = !paused;
+                bool resume = paused;
+                paused = !resume;
                 pauseItem.Text = paused ? "恢复自动适应" : "暂停并恢复原主题";
                 window.SetPaused(paused);
-                engine.Reset();
+                if (paused) RestoreManagedState();
+                engine.Reset(); sceneCoordinator.ResetPending();
                 Tick();
             }
             catch (Exception error) { Report(error); }
@@ -265,8 +337,8 @@ namespace LumaBar
         {
             try
             {
-                controller.Restore();
-                engine.Reset();
+                RestoreManagedState();
+                engine.Reset(); sceneCoordinator.ResetPending();
                 mode = next;
                 Tick();
             }
@@ -282,40 +354,59 @@ namespace LumaBar
                     if (SystemInformation.HighContrast) ReleaseForIdle();
                     engine.Reset();
                     window.UpdateStatus(paused ? "已暂停 · 已恢复或保留原主题" : "系统暂停 · 高对比度 / 锁屏 / 休眠", null, controller.Current.Tone);
+                    UpdateMaterialStatus();
                     return;
                 }
                 if (!controller.OwnsCurrent())
                 {
                     paused = true;
-                    controller.Restore(); // Leaves external changes in place.
+                    RestoreManagedState(); // Leaves external theme changes in place.
                     pauseItem.Text = "恢复自动适应";
                     window.SetPaused(true);
                     window.UpdateStatus("检测到外部主题更改，已暂停", null, controller.Current.Tone);
                     return;
                 }
                 Tone current = controller.Current.Tone;
-                if (mode == "固定浅色" || mode == "固定深色")
+                Settings samplingSettings = settings;
+                if (previewGlass != null)
                 {
-                    controller.Apply(mode == "固定浅色" ? Tone.Light : Tone.Dark);
-                    window.UpdateStatus(mode, null, controller.Current.Tone);
-                    return;
+                    samplingSettings = Files.Json.Deserialize<Settings>(Files.Json.Serialize(settings));
+                    samplingSettings.Glass = previewGlass;
                 }
-                WindowSample sample = WindowSampler.Read(settings);
+                WindowSample sample = WindowSampler.Read(samplingSettings);
+                long now = clock.ElapsedMilliseconds;
                 if (sample.IsApplication && !String.IsNullOrEmpty(sample.ProcessName))
-                { lastApplication = sample.ProcessName; lastApplicationAt = clock.ElapsedMilliseconds; }
+                { lastApplication = sample.ProcessName; lastApplicationAt = now; }
+                Tone? wanted = DesiredTone(sample, current);
+                bool fixedMode = mode == "固定浅色" || mode == "固定深色";
+                if (fixedMode)
+                {
+                    wanted = mode == "固定浅色" ? Tone.Light : Tone.Dark;
+                    CommitTheme(wanted.Value);
+                }
                 if (sample.Valid)
                 {
-                    long now = clock.ElapsedMilliseconds;
-                    if (!timingSource.HasValue || timingSource.Value != sample.IsWallpaper) burstUntil = now + 1000;
-                    timingSource = sample.IsWallpaper;
-                    // Burst only while entering/leaving a maximized/fullscreen
-                    // window; ordinary content keeps the slower steady cadence.
-                    timer.Interval = now < burstUntil ? Math.Min(75, settings.PollMilliseconds) : settings.PollMilliseconds;
-                    Tone? decision = engine.Observe(sample.DecisionContext, sample.DecisionBrightness, current, now, sample.ExplicitRule || sample.IsWallpaper, sample.IsWallpaper);
-                    if (decision.HasValue && mode != "仅检测（不修改）") controller.Apply(decision.Value);
+                    probeSchedule.Observe(now, sample.IsWallpaper, sample.DecisionContext);
+                    timer.Interval = probeSchedule.Interval(now, settings.PollMilliseconds);
+                    if (!fixedMode)
+                    {
+                        Tone? decision = engine.Observe(sample.DecisionContext, sample.DecisionBrightness, current, now, sample.ExplicitRule || sample.IsWallpaper, sample.IsWallpaper);
+                        if (decision.HasValue && mode != "仅检测（不修改）") CommitTheme(decision.Value);
+                    }
                 }
-                else { engine.Reset(); timer.Interval = settings.PollMilliseconds; }
+                else { engine.Reset(); timer.Interval = probeSchedule.Interval(now, settings.PollMilliseconds); }
+                if (sample.Scene.HasValue || sample.Valid)
+                {
+                    sceneCoordinator.Observe(SceneFor(sample), sample.DecisionContext, mode == "仅检测（不修改）" ? null : wanted, controller.Current.Tone, now, settings.SourceStableMilliseconds);
+                    if (sceneCoordinator.Ready) materialScene = sceneCoordinator.Current;
+                    string basis = sample.Valid && !sample.ExplicitRule
+                        ? (sample.IsWallpaper ? "壁纸" : "窗口内容") + (sample.Brightness >= .5 ? "偏亮 " : "偏暗 ") + sample.Brightness.ToString("P0")
+                        : sample.Reason;
+                    window.UpdateSceneStatus(sceneCoordinator.Ready ? MaterialNames.Scene(materialScene) : "正在确认场景", basis);
+                }
                 window.UpdateStatus(sample.Reason, sample.Valid && !sample.ExplicitRule ? (double?)sample.Brightness : null, controller.Current.Tone, sample.IsWallpaper ? "壁纸" : "窗口");
+                ApplyMaterials();
+                UpdateMaterialStatus();
                 tray.Text = "LumaBar · " + (mode == "仅检测（不修改）" ? "仅检测" : controller.Current.Tone == Tone.Light ? "浅色" : "深色");
             }
             catch (Exception error)
@@ -323,21 +414,24 @@ namespace LumaBar
                 paused = true;
                 pauseItem.Text = "恢复自动适应";
                 window.SetPaused(true);
-                try { controller.Restore(); } catch (Exception restoreError) { Files.Log(restoreError.ToString()); }
+                try { RestoreManagedState(); } catch (Exception restoreError) { Files.Log(restoreError.ToString()); }
                 Report(error);
             }
         }
+        internal static MaterialScene SceneFor(WindowSample sample)
+        { return sample.Scene ?? (sample.IsWallpaper ? (sample.IsDesktop ? MaterialScene.Desktop : MaterialScene.Window) : MaterialScene.Maximized); }
         private void Report(Exception error)
         {
             Files.Log(error.ToString());
             window.UpdateStatus("错误：" + error.Message, null, Tone.Dark);
             tray.ShowBalloonTip(5000, "LumaBar", error.Message.Length > 200 ? error.Message.Substring(0, 200) : error.Message, ToolTipIcon.Warning);
+            UpdateMaterialStatus();
         }
         protected override void ExitThreadCore()
         {
             if (exiting) return;
             timer.Stop();
-            try { controller.Restore(); }
+            try { RestoreManagedState(); }
             catch (Exception error)
             {
                 paused = true;
@@ -348,10 +442,15 @@ namespace LumaBar
                 MessageBox.Show(window, "恢复失败，程序保持暂停。请检查日志后重试退出；恢复记录会保留。", "LumaBar");
                 return;
             }
+            // Give the final restore notifications a bounded chance to complete before process exit.
+            Native.WaitForThemeRefresh(1500);
             exiting = true;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.SessionEnding -= OnSessionEnding;
             SystemEvents.PowerModeChanged -= OnPowerMode;
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            windowEvents.Dispose();
+            if (materials != null) materials.Dispose();
             tray.Visible = false;
             tray.Dispose();
             timer.Dispose();
@@ -365,6 +464,8 @@ namespace LumaBar
 
     internal sealed class PreferencesWindow : Form
     {
+        internal event Action<GlassSettings> AppearancePreview;
+        private readonly AppearanceEditor appearance;
         private readonly ComboBox pace;
         private readonly CheckBox startup;
         private readonly DataGridView rules;
@@ -378,15 +479,19 @@ namespace LumaBar
             SuspendLayout();
             Text = "LumaBar · 设置";
             Font = new Font("Microsoft YaHei UI", 10);
-            ClientSize = new Size(660, 540);
+            ClientSize = new Size(660, 680);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(247, 249, 252);
-            TabControl tabs = new TabControl { Location = new Point(20, 20), Size = new Size(620, 448) };
-            TabPage general = new TabPage("常规") { BackColor = Color.White };
-            TabPage applications = new TabPage("应用规则") { BackColor = Color.White };
+            TabControl tabs = new TabControl { Location = new Point(20, 20), Size = new Size(620, 588), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
+            TabPage general = new TabPage("常规") { BackColor = Color.White, AutoScroll = true };
+            TabPage applications = new TabPage("应用规则") { BackColor = Color.White, AutoScroll = true };
             tabs.TabPages.Add(general); tabs.TabPages.Add(applications); Controls.Add(tabs);
+            TabPage visuals = new TabPage("任务栏外观") { BackColor = Color.White };
+            appearance = new AppearanceEditor(settings.Glass) { Dock = DockStyle.Fill };
+            appearance.PreviewRequested += delegate(GlassSettings glass) { if (AppearancePreview != null) AppearancePreview(glass); };
+            visuals.Controls.Add(appearance); tabs.TabPages.Add(visuals);
             Label title = new Label { Text = "让任务栏与开始菜单自然适应明暗", Location = new Point(22, 20), Size = new Size(555, 32), Font = new Font(Font.FontFamily, 14, FontStyle.Bold) };
             general.Controls.Add(title);
             general.Controls.Add(new Label { Text = "最大化 / 全屏时跟随软件；普通窗口与桌面跟随壁纸。\n自动 / 固定浅色 / 固定深色可在主界面切换。", Location = new Point(24, 65), Size = new Size(550, 55) });
@@ -410,6 +515,9 @@ namespace LumaBar
             }
             general.Controls.Add(pace);
             general.Controls.Add(new Label { Text = "灵敏：响应更快　·　均衡：推荐　·　舒缓：减少切换\n速度调整同时作用于最大化、还原和窗口内容变化。", Location = new Point(24, 305), Size = new Size(550, 62), ForeColor = Color.DimGray });
+            LinkLabel license = new LinkLabel { Text = "关于与开源许可（含 TranslucentTB）", Location = new Point(24, 382), Size = new Size(550, 28) };
+            license.LinkClicked += delegate { try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "THIRD_PARTY_NOTICES.md") + "\""); } catch (Exception error) { MessageBox.Show(this, error.Message, "LumaBar"); } };
+            general.Controls.Add(license);
             applications.Controls.Add(new Label { Text = "填写进程名（如 Code.exe、WeChat.exe）。规则仅在最大化 / 全屏时生效。\n普通窗口仍跟随壁纸；删除规则后恢复自动识别。", Location = new Point(16, 14), Size = new Size(580, 52) });
             rules = new DataGridView { Location = new Point(16, 78), Size = new Size(576, 265), BackgroundColor = Color.White,
                 AutoGenerateColumns = false, AllowUserToAddRows = true, AllowUserToDeleteRows = true,
@@ -429,12 +537,20 @@ namespace LumaBar
             Button remove = new Button { Text = "删除选中规则", Location = new Point(16, 355), Size = new Size(155, 34) };
             remove.Click += delegate { if (rules.CurrentRow != null && !rules.CurrentRow.IsNewRow) rules.Rows.Remove(rules.CurrentRow); };
             applications.Controls.Add(remove);
-            Button apply = new Button { Text = "保存并应用", Location = new Point(366, 486), Size = new Size(140, 34) };
-            Button cancel = new Button { Text = "取消", Location = new Point(520, 486), Size = new Size(120, 34), DialogResult = DialogResult.Cancel };
+            Button apply = new Button { Text = "保存并应用", Location = new Point(366, 626), Size = new Size(140, 34) };
+            Button cancel = new Button { Text = "取消", Location = new Point(520, 626), Size = new Size(120, 34), DialogResult = DialogResult.Cancel };
+            apply.Anchor = cancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             apply.Click += delegate { ApplySettings(startupCommand, expected); };
             Controls.Add(apply); Controls.Add(cancel); AcceptButton = apply; CancelButton = cancel;
             AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
             ResumeLayout(true);
+            Shown += delegate {
+                Rectangle work = Screen.FromControl(this).WorkingArea;
+                if (Height > work.Height - 24) Height = Math.Max(300, work.Height - 24);
+                if (Width > work.Width - 24) Width = Math.Max(320, work.Width - 24);
+                Top = Math.Max(work.Top, Math.Min(Top, work.Bottom - Height));
+                Left = Math.Max(work.Left, Math.Min(Left, work.Right - Width));
+            };
         }
         private void ApplySettings(string previousCommand, string expected)
         {
@@ -457,6 +573,7 @@ namespace LumaBar
                 bool saved = save(delegate(Settings next) {
                     if (selectedPace != null) next.SetPace(selectedPace);
                     next.ApplicationRules = edited.ApplicationRules;
+                    next.Glass = appearance.Value;
                 });
                 if (!saved)
                 {
@@ -489,10 +606,17 @@ namespace LumaBar
         internal event Action RulesRequested;
         internal event Action PaceRequested;
         internal event Action SettingsRequested;
+        internal event Action RetryRequested;
         internal bool AllowClose;
         private readonly Label status;
         private readonly Label brightness;
         private readonly Label theme;
+        private readonly Label materialStatus;
+        private readonly Button retry;
+        private readonly ToolTip materialTip = new ToolTip();
+        private string sceneText = "等待场景";
+        private string basisText = "等待取样";
+        private string materialText = "尚未应用";
         private readonly ProgressBar meter;
         private readonly Button pause;
 
@@ -500,7 +624,7 @@ namespace LumaBar
         {
             SuspendLayout();
             Text = "LumaBar";
-            ClientSize = new Size(520, 490);
+            ClientSize = new Size(520, 550);
             MinimumSize = Size;
             MaximumSize = Size;
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -509,7 +633,7 @@ namespace LumaBar
             BackColor = Color.FromArgb(22, 25, 32);
             ForeColor = Color.FromArgb(230, 235, 242);
             Font = new Font("Microsoft YaHei UI", 10);
-            AddLabel("LumaBar 0.4", 28, 24, 310, 45, 25, Color.White);
+            AddLabel("LumaBar 0.6", 28, 24, 310, 45, 25, Color.White);
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
             AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 76, 464, 30, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));
@@ -525,9 +649,12 @@ namespace LumaBar
             pause = AddButton("暂停并恢复", 316, 272, 174, delegate { if (PauseRequested != null) PauseRequested(); });
             AddButton("应用纠正…", 30, 319, 222, delegate { if (RulesRequested != null) RulesRequested(); });
             AddButton("切换节奏…", 268, 319, 222, delegate { if (PaceRequested != null) PaceRequested(); });
-            AddLabel("最大化 / 全屏跟随软件，普通窗口与桌面跟随壁纸。\n任务栏与开始菜单联动。过渡由 Windows 原生处理。\n壁纸原图在内存中分析，不受窗口遮挡影响。", 30, 369, 465, 65, 9, Color.FromArgb(157, 174, 197));
-            AddButton("收起到托盘", 30, 440, 222, delegate { if (HideRequested != null) HideRequested(); });
-            AddButton("退出并恢复", 268, 440, 222, delegate { if (ExitRequested != null) ExitRequested(); });
+            materialStatus = AddLabel("等待场景与材质状态", 30, 365, 465, 68, 9, Color.FromArgb(132, 206, 195));
+            retry = AddButton("重试玻璃效果", 30, 438, 460, delegate { if (RetryRequested != null) RetryRequested(); });
+            retry.Text = "重新应用任务栏外观";
+            AddButton("收起到托盘", 30, 490, 222, delegate { if (HideRequested != null) HideRequested(); });
+            AddButton("退出并恢复", 268, 490, 222, delegate { if (ExitRequested != null) ExitRequested(); });
+            FormClosed += delegate { materialTip.Dispose(); };
             FormClosing += delegate(object sender, FormClosingEventArgs args)
             {
                 if (!AllowClose && args.CloseReason == CloseReason.UserClosing)
@@ -536,6 +663,17 @@ namespace LumaBar
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
             ResumeLayout(true);
+            Shown += delegate {
+                Rectangle work = Screen.FromControl(this).WorkingArea;
+                if (Height > work.Height - 24 || Width > work.Width - 24)
+                {
+                    AutoScrollMinSize = ClientSize; AutoScroll = true; MinimumSize = Size.Empty;
+                    Height = Math.Min(Height, Math.Max(300, work.Height - 24));
+                    Width = Math.Min(Width, Math.Max(320, work.Width - 24));
+                    Top = Math.Max(work.Top, Math.Min(Top, work.Bottom - Height));
+                    Left = Math.Max(work.Left, Math.Min(Left, work.Right - Width));
+                }
+            };
         }
         private Label AddLabel(string text, int x, int y, int width, int height, float size, Color color)
         {
@@ -550,6 +688,16 @@ namespace LumaBar
             button.Click += delegate { action(); };
             Controls.Add(button);
             return button;
+        }
+        internal void UpdateSceneStatus(string scene, string basis)
+        { sceneText = scene; basisText = basis; RefreshMaterialText(); }
+        internal void UpdateMaterialStatus(string text, bool canRetry = false, bool allowAction = true)
+        { materialText = text; retry.Visible = allowAction; retry.Text = canRetry ? "重试玻璃效果" : "重新应用任务栏外观"; RefreshMaterialText(); }
+        private void RefreshMaterialText()
+        {
+            string text = "场景：" + sceneText + "\n依据：" + basisText + "\n材质：" + materialText;
+            materialStatus.Text = text;
+            materialTip.SetToolTip(materialStatus, text + "\n图标与文字明暗由 Windows 统一控制。");
         }
         internal void SetPaused(bool value) { pause.Text = value ? "继续适应" : "暂停并恢复"; }
         private readonly ComboBox modes;

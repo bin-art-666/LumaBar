@@ -14,6 +14,7 @@
     <WarningLevel>4</WarningLevel>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Optimize>true</Optimize>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System"/><Reference Include="System.Core"/>
@@ -22,6 +23,12 @@
     <Compile Include="src\Core.cs"/><Compile Include="src\Native.cs"/>
     <Compile Include="src\Wallpaper.cs"/>
     <Compile Include="src\Storage.cs"/><Compile Include="src\App.cs"/>
+    <Compile Include="src\WindowEvents.cs"/><Compile Include="src\Readability.cs"/>
+    <Compile Include="src\Materials.cs"/><Compile Include="src\AppearanceEditor.cs"/>
+    <Content Include="native\ExplorerTAP.dll"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="LICENSE"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="LICENSE-LumaBar-MIT"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="THIRD_PARTY_NOTICES.md"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
     <None Include="LumaBar.exe.config"/>
     <Content Include="settings.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
   </ItemGroup>

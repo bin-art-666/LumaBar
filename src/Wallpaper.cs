@@ -29,6 +29,7 @@ namespace LumaBar
         public int Position = 4; // center, tile, stretch, fit, fill, span (0..5)
         public Color Background;
         public Rectangle Monitor;
+        public Rectangle SampleArea;
         public Rectangle VirtualDesktop;
     }
 
@@ -36,8 +37,12 @@ namespace LumaBar
     {
         internal static Tone ToneOf(double brightness) { return brightness >= 0.5 ? Tone.Light : Tone.Dark; }
         internal static double Analyze(Bitmap image, WallpaperDescription description)
+        { return AnalyzeDetails(image, description).Brightness; }
+        internal static BackdropReading AnalyzeDetails(Bitmap image, WallpaperDescription description)
         {
             List<double> values = new List<double>();
+            Rectangle sampleArea = description.SampleArea.IsEmpty ? description.Monitor : Rectangle.Intersect(description.Monitor, description.SampleArea);
+            if (sampleArea.Width <= 0 || sampleArea.Height <= 0) throw new ArgumentException("Empty wallpaper sampling area");
             Rectangle area = description.Position == 5 ? description.VirtualDesktop : description.Monitor;
             double sx = 1, sy = 1;
             if (image != null)
@@ -55,8 +60,8 @@ namespace LumaBar
                     Color color = description.Background;
                     if (image != null)
                     {
-                        double x = description.Monitor.Left + (col + 0.5) * description.Monitor.Width / 64;
-                        double y = description.Monitor.Top + (row + 0.5) * description.Monitor.Height / 40;
+                        double x = sampleArea.Left + (col + 0.5) * sampleArea.Width / 64;
+                        double y = sampleArea.Top + (row + 0.5) * sampleArea.Height / 40;
                         double px, py;
                         if (description.Position == 1)
                         {
@@ -78,7 +83,8 @@ namespace LumaBar
                     }
                     values.Add(Brightness.Of(color.R, color.G, color.B));
                 }
-            return Brightness.Median(values);
+            values.Sort();
+            return new BackdropReading { Brightness = (values[(values.Count - 1) / 2] + values[values.Count / 2]) / 2, Low = values[values.Count / 10], High = values[values.Count * 9 / 10] };
         }
         private static double Mod(double value, double modulus) { return (value % modulus + modulus) % modulus; }
     }
@@ -90,14 +96,24 @@ namespace LumaBar
             internal long NextCheck;
             internal string Fingerprint;
             internal double? Brightness;
+            internal BackdropReading Reading;
             internal string Reason;
+            internal long Context;
         }
         private static readonly Stopwatch clock = Stopwatch.StartNew();
         private static readonly Dictionary<string, Cache> cache = new Dictionary<string, Cache>();
 
-        internal static WindowSample Read(Rectangle monitor)
+        private static long nextContext;
+        internal static void Invalidate()
         {
-            string key = monitor.ToString() + SystemInformation.VirtualScreen.ToString();
+            foreach (Cache entry in cache.Values) { entry.NextCheck = 0; entry.Fingerprint = null; }
+        }
+        internal static WindowSample Read(Rectangle monitor) { return Read(monitor, false); }
+        internal static WindowSample ReadTaskbar(Rectangle monitor) { return Read(monitor, true); }
+        private static WindowSample Read(Rectangle monitor, bool taskbarRegion)
+        {
+            Rectangle region = taskbarRegion ? TaskbarGeometry.SampleArea(monitor) : monitor;
+            string key = monitor.ToString() + SystemInformation.VirtualScreen.ToString() + region.ToString();
             Cache entry;
             if (!cache.TryGetValue(key, out entry))
             {
@@ -106,10 +122,11 @@ namespace LumaBar
             }
             if (entry.NextCheck <= clock.ElapsedMilliseconds)
             {
-                entry.NextCheck = clock.ElapsedMilliseconds + 2000;
+                entry.NextCheck = clock.ElapsedMilliseconds + 500;
                 try
                 {
                     WallpaperDescription description = Describe(monitor);
+                    description.SampleArea = region;
                     string fingerprint = description.Path + "|" + description.Position + "|" + description.Background.ToArgb() + "|" + key;
                     if (!String.IsNullOrEmpty(description.Path))
                     {
@@ -119,22 +136,24 @@ namespace LumaBar
                     }
                     if (entry.Brightness == null || entry.Fingerprint != fingerprint)
                     {
-                        if (String.IsNullOrEmpty(description.Path)) entry.Brightness = WallpaperAnalyzer.Analyze(null, description);
+                        if (String.IsNullOrEmpty(description.Path)) entry.Reading = WallpaperAnalyzer.AnalyzeDetails(null, description);
                         else
                         {
                             using (FileStream stream = new FileStream(description.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                             using (Bitmap image = new Bitmap(stream))
-                                entry.Brightness = WallpaperAnalyzer.Analyze(image, description);
+                                entry.Reading = WallpaperAnalyzer.AnalyzeDetails(image, description);
                         }
+                        entry.Brightness = entry.Reading.Brightness;
                         entry.Fingerprint = fingerprint;
+                        entry.Context = long.MinValue + ++nextContext;
                     }
-                    entry.Reason = "普通窗口 / 桌面：跟随壁纸";
+                    entry.Reason = taskbarRegion ? "普通窗口 / 桌面：跟随任务栏区域壁纸" : "普通窗口 / 桌面：跟随壁纸";
                 }
                 catch (Exception error)
                 {
                     if (!(error is IOException) && !(error is UnauthorizedAccessException) && !(error is ArgumentException) &&
                         !(error is ExternalException) && !(error is NotSupportedException) && !(error is OutOfMemoryException)) throw;
-                    entry.Brightness = null;
+                    entry.Brightness = null; entry.Reading = null;
                     entry.Reason = "无法读取壁纸：保持当前明暗";
                 }
             }
@@ -142,7 +161,7 @@ namespace LumaBar
             {
                 Valid = entry.Brightness.HasValue, IsWallpaper = true,
                 Brightness = entry.Brightness ?? 0, Reason = entry.Reason,
-                WallpaperContext = unchecked(long.MinValue ^ ((long)(uint)monitor.Left << 32) ^ (uint)monitor.Top)
+                WallpaperContext = entry.Context, Backdrop = entry.Reading
             };
         }
 

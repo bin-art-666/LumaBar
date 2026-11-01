@@ -1,0 +1,3 @@
+[submodule "vendor/TranslucentTB"]
+	path = vendor/TranslucentTB
+	url = https://github.com/TranslucentTB/TranslucentTB.git

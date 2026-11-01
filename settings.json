@@ -3,12 +3,44 @@
   "StableMilliseconds": 700,
   "ContentStableMilliseconds": 1400,
   "MinimumSwitchMilliseconds": 1800,
-  "SourceStableMilliseconds": 180,
-  "SourceMinimumSwitchMilliseconds": 400,
+  "SourceStableMilliseconds": 100,
+  "SourceMinimumSwitchMilliseconds": 250,
   "DarkThreshold": 0.44,
-  "LightThreshold": 0.60,
+  "LightThreshold": 0.6,
   "HoldOwnedDialogs": true,
   "HoldMediaPlayers": true,
   "ApplicationRules": {},
-  "IgnoredProcesses": []
+  "IgnoredProcesses": [],
+  "Glass": {
+    "Enabled": true,
+    "TaskbarRegion": true,
+    "Desktop": {
+      "Material": "blur",
+      "AutomaticColor": true,
+      "Color": "#202630",
+      "TintOpacity": 22,
+      "BlurRadius": 24,
+      "ShowLine": false
+    },
+    "Window": {
+      "Material": "blur",
+      "AutomaticColor": true,
+      "Color": "#202630",
+      "TintOpacity": 22,
+      "BlurRadius": 24,
+      "ShowLine": false
+    },
+    "Maximized": {
+      "Material": "normal",
+      "AutomaticColor": true,
+      "Color": "#202630",
+      "TintOpacity": 22,
+      "BlurRadius": 24,
+      "ShowLine": true
+    },
+    "AutoContrast": true,
+    "PerMonitor": true,
+    "MonitorOverrides": {}
+  },
+  "TimingVersion": 1
 }
