@@ -256,17 +256,43 @@ namespace LumaBar
                 try
                 {
                     Settings settings = Files.Json.Deserialize<Settings>(File.ReadAllText(settingsPath)); settings.Validate();
+                    using (Form animatedWindow = new Form { Text = "LumaBar restore regression", BackColor = Color.White, StartPosition = FormStartPosition.Manual, Bounds = new Rectangle(Screen.PrimaryScreen.WorkingArea.Left + 150, Screen.PrimaryScreen.WorkingArea.Top + 100, 900, 600) })
                     using (MaterialController material = new MaterialController())
                     {
+                        animatedWindow.Show(); Pump();
                         // Initialize COM first so the measurement covers an ordinary restore.
                         ApplyAndWait(material, settings.Glass, Tone.Dark);
                         Check(material.Snapshot.State == MaterialState.Applied, "native glass component connects before transition measurement");
                         for (int iteration = 0; iteration < 3; iteration++)
                         {
+                            animatedWindow.WindowState = FormWindowState.Maximized;
                             theme.Apply(Tone.Light);
                             long initial = material.CompletedUpdates;
                             material.Apply(settings.Glass, MaterialScene.Maximized, Tone.Light, true);
                             WaitUntil(delegate { return material.CompletedUpdates > initial; }); Settle();
+                            VisualTransitionGate visual = new VisualTransitionGate();
+                            bool animations = SystemInformation.IsMinimizeRestoreAnimationEnabled;
+                            IntPtr handle = animatedWindow.Handle;
+                            visual.Observe(MaterialScene.Maximized, handle.ToInt64(), Native.FrameOf(handle), 0);
+                            DecisionEngine decision = new DecisionEngine(settings);
+                            long untouchedMaterial = material.CompletedUpdates;
+                            bool changedDuringAnimation = false;
+                            System.Diagnostics.Stopwatch restore = System.Diagnostics.Stopwatch.StartNew();
+                            animatedWindow.WindowState = FormWindowState.Normal;
+                            Tone? pending = null;
+                            while (!pending.HasValue && restore.ElapsedMilliseconds < 5000)
+                            {
+                                Application.DoEvents();
+                                WindowSample observed = WindowSampler.Read(settings, true, handle);
+                                long now = restore.ElapsedMilliseconds;
+                                bool ready = visual.Observe(TrayApp.SceneFor(observed), handle.ToInt64(), Native.FrameOf(handle), now);
+                                pending = decision.Observe(observed.DecisionContext, 0, Tone.Light, now, true, true, ready);
+                                changedDuringAnimation |= theme.Current.Tone != Tone.Light || material.CompletedUpdates != untouchedMaterial;
+                                if (!pending.HasValue) Thread.Sleep(40);
+                            }
+                            Console.WriteLine("Restore settled: {0}ms, animations={1}, frame={2}", restore.ElapsedMilliseconds, animations, Native.FrameOf(handle));
+                            Check(pending == Tone.Dark && !changedDuringAnimation && restore.ElapsedMilliseconds >= VisualTransitionGate.SettleMilliseconds,
+                                "real restore retains theme and material until stable, then releases both " + iteration);
                             MaterialPlan target = ReadabilityPolicy.Capture(settings.Glass, MaterialScene.Window, Tone.Dark);
                             long completed = material.CompletedUpdates;
                             long submittedAt = -1;

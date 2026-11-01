@@ -40,7 +40,7 @@ namespace LumaBar
     {
         private static void StabilityTests()
         {
-            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); MaterialRecoveryTests();
+            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); MaterialRecoveryTests();
             using (StatusWindow window = new StatusWindow())
             {
                 int retry = 0; window.RetryRequested += delegate { retry++; };
@@ -163,6 +163,41 @@ namespace LumaBar
             scene.Observe(MaterialScene.Window, 5, Tone.Dark, Tone.Dark, 950, 100);
             Check(scene.Ready && scene.Current == MaterialScene.Window, "confirmed restore selects glass in the same observation as the dark tone");
             Check(scene.Ready, "held applications can confirm material without forcing a theme change");
+        }
+        private static void VisualTransitionTests()
+        {
+            VisualTransitionGate gate = new VisualTransitionGate();
+            Rectangle full = new Rectangle(0, 0, 1920, 1080), window = new Rectangle(150, 100, 1000, 700);
+            Check(gate.Observe(MaterialScene.Maximized, 1, full, 0), "startup has no artificial animation delay");
+            Check(!gate.Observe(MaterialScene.Window, 1, window, 10) && gate.Waiting, "restore holds theme and glass together while window is animating");
+            Check(!gate.Observe(MaterialScene.Window, 1, window, 130), "mature 120ms source decision cannot interrupt a restore animation");
+            Check(!gate.Observe(MaterialScene.Window, 1, window, 229), "restore waits through the minimum settling window");
+            Check(gate.Observe(MaterialScene.Window, 1, window, 230) && !gate.Waiting, "restore releases once after 220ms with stable geometry");
+            Check(gate.Observe(MaterialScene.Window, 2, window, 240), "ordinary app or content changes do not acquire animation delay");
+            Check(!gate.Observe(MaterialScene.Maximized, 2, full, 300), "maximize also retains the previous appearance during animation");
+            Check(gate.Observe(MaterialScene.Window, 2, window, 350) && !gate.Waiting, "cancelled maximize discards its intermediate appearance");
+            gate.Observe(MaterialScene.Maximized, 2, full, 400);
+            gate.Observe(MaterialScene.Maximized, 2, full, 520);
+            Rectangle moving = new Rectangle(1, 0, 1919, 1080);
+            Check(!gate.Observe(MaterialScene.Maximized, 2, moving, 610), "late geometry movement extends the quiet interval");
+            Check(!gate.Observe(MaterialScene.Maximized, 2, moving, 650), "minimum dwell alone does not release moving geometry");
+            Check(gate.Observe(MaterialScene.Maximized, 2, moving, 690), "stable geometry eventually releases without restarting the full delay");
+            Check(!gate.Observe(MaterialScene.Window, 2, window, 700), "fullscreen settling does not depend on the separate minimize-animation setting");
+            gate.Reset(); gate.Observe(MaterialScene.Window, 2, window, 700);
+            gate.Observe(MaterialScene.Maximized, 3, full, 800);
+            Check(!gate.Observe(MaterialScene.Maximized, 3, full, 1100), "observation gap cannot approve a stale animation candidate");
+            gate.Reset();
+            Check(gate.Observe(MaterialScene.Desktop, 0, Rectangle.Empty, 1200), "resume starts with a fresh observed appearance");
+            DecisionEngine engine = new DecisionEngine(new Settings());
+            engine.Observe(1, 1, Tone.Dark, 0, true, true, false);
+            engine.Observe(1, 1, Tone.Dark, 100, true, true, false);
+            Check(engine.Observe(1, 1, Tone.Dark, 180, true, true, false) == null, "ready theme remains pending until the animation gate opens");
+            Check(engine.Observe(1, 1, Tone.Dark, 220, true, true, true) == Tone.Light, "opening animation gate commits an already stable tone without another dwell");
+            engine = new DecisionEngine(new Settings());
+            engine.Observe(1, 1, Tone.Dark, 0, true, true, false);
+            engine.Observe(1, 1, Tone.Dark, 200, true, true, false);
+            engine.Observe(2, 1, Tone.Dark, 250, true, false, false);
+            Check(engine.Observe(2, 1, Tone.Dark, 450, true, false, true) == Tone.Light, "cancelled deferred switch did not consume the real theme cooldown");
         }
         private static MaterialPlan TestPlan(Tone tone)
         { return ReadabilityPolicy.Build(new GlassSettings(), MaterialScene.Desktop, tone, TwoDisplays(), "left"); }

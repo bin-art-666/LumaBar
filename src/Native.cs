@@ -183,6 +183,14 @@ namespace LumaBar
             return samples.Count >= 8 ? (double?)Brightness.Median(samples) : null;
         }
 
+        internal static System.Drawing.Rectangle FrameOf(IntPtr window)
+        {
+            Rect rect;
+            if (window == IntPtr.Zero || (GetFrameBounds(window, 9, out rect, Marshal.SizeOf(typeof(Rect))) != 0 && !GetWindowRect(window, out rect)))
+                return System.Drawing.Rectangle.Empty;
+            return System.Drawing.Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        }
+
         internal static string ClassOf(IntPtr hwnd)
         {
             StringBuilder name = new StringBuilder(256);

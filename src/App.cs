@@ -60,6 +60,7 @@ namespace LumaBar
         private MaterialController materials;
         private MaterialScene materialScene = MaterialScene.Desktop;
         private readonly SceneCoordinator sceneCoordinator = new SceneCoordinator();
+        private readonly VisualTransitionGate visualTransition = new VisualTransitionGate();
         private GlassSettings previewGlass;
         private readonly ThemeController controller;
         private DecisionEngine engine;
@@ -145,7 +146,7 @@ namespace LumaBar
                 // live rules or timing without also persisting that choice.
                 Settings next = Files.Json.Deserialize<Settings>(Files.Json.Serialize(settings));
                 next.Validate(); change(next); next.Validate(); Files.SaveSettings(next);
-                settings = next; engine = new DecisionEngine(settings);
+                settings = next; engine = new DecisionEngine(settings); visualTransition.Reset();
                 timingSource = null; burstUntil = 0;
                 timer.Interval = settings.PollMilliseconds;
                 window.UpdateStatus("设置已保存，立即生效", null, controller.Current.Tone);
@@ -155,7 +156,7 @@ namespace LumaBar
         }
         private void ApplyMaterials(bool force = false)
         {
-            if (mode == "仅检测（不修改）" || paused || sessionLocked || suspended || SystemInformation.HighContrast || !sceneCoordinator.Ready) return;
+            if (mode == "仅检测（不修改）" || paused || sessionLocked || suspended || SystemInformation.HighContrast || !sceneCoordinator.Ready || visualTransition.Waiting) return;
             GlassSettings glass = previewGlass ?? settings.Glass;
             if (materials == null && glass.Enabled) materials = new MaterialController();
             if (materials != null) materials.Apply(glass, materialScene, controller.Current.Tone, force);
@@ -208,7 +209,7 @@ namespace LumaBar
                 {
                     preferences.AppearancePreview += delegate(GlassSettings glass) { previewGlass = glass; ApplyMaterials(true); };
                     try { preferences.ShowDialog(window); }
-                    finally { previewGlass = null; engine = new DecisionEngine(settings); timingSource = null; burstUntil = 0; ApplyMaterials(true); }
+                    finally { previewGlass = null; engine = new DecisionEngine(settings); visualTransition.Reset(); timingSource = null; burstUntil = 0; ApplyMaterials(true); }
                 }
             }
             catch (Exception error) { Report(error); }
@@ -300,7 +301,7 @@ namespace LumaBar
         }
         private void ReleaseForIdle()
         {
-            engine.Reset(); sceneCoordinator.ResetPending();
+            engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
             try { RestoreManagedState(); }
             catch (Exception error) { paused = true; Report(error); }
         }
@@ -314,7 +315,7 @@ namespace LumaBar
                 pauseItem.Text = paused ? "恢复自动适应" : "暂停并恢复原主题";
                 window.SetPaused(paused);
                 if (paused) RestoreManagedState();
-                engine.Reset(); sceneCoordinator.ResetPending();
+                engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
                 Tick();
             }
             catch (Exception error) { Report(error); }
@@ -324,7 +325,7 @@ namespace LumaBar
             try
             {
                 RestoreManagedState();
-                engine.Reset(); sceneCoordinator.ResetPending();
+                engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
                 mode = next;
                 Tick();
             }
@@ -363,13 +364,16 @@ namespace LumaBar
                 long now = clock.ElapsedMilliseconds;
                 if (sample.IsApplication && !String.IsNullOrEmpty(sample.ProcessName))
                 { lastApplication = sample.ProcessName; lastApplicationAt = now; }
+                bool visualReady = !visualTransition.Waiting;
+                if (sample.Scene.HasValue || sample.Valid)
+                    visualReady = visualTransition.Observe(SceneFor(sample), sample.Window.ToInt64(), Native.FrameOf(sample.Window), now);
                 Tone? wanted = DesiredTone(sample, current);
                 Tone? commit = null;
                 bool fixedMode = mode == "固定浅色" || mode == "固定深色";
                 if (fixedMode)
                 {
                     wanted = mode == "固定浅色" ? Tone.Light : Tone.Dark;
-                    commit = wanted;
+                    if (visualReady) commit = wanted;
                 }
                 if (sample.Valid)
                 {
@@ -378,7 +382,7 @@ namespace LumaBar
                     timer.Interval = now < burstUntil ? Math.Min(75, settings.PollMilliseconds) : settings.PollMilliseconds;
                     if (!fixedMode)
                     {
-                        Tone? decision = engine.Observe(sample.DecisionContext, sample.DecisionBrightness, current, now, sample.ExplicitRule || sample.IsWallpaper, sample.IsWallpaper);
+                        Tone? decision = engine.Observe(sample.DecisionContext, sample.DecisionBrightness, current, now, sample.ExplicitRule || sample.IsWallpaper, sample.IsWallpaper, visualReady);
                         if (decision.HasValue && mode != "仅检测（不修改）") commit = decision;
                     }
                 }
@@ -390,8 +394,9 @@ namespace LumaBar
                     string basis = sample.Valid && !sample.ExplicitRule
                         ? (sample.IsWallpaper ? "壁纸" : "窗口内容") + (sample.Brightness >= .5 ? "偏亮 " : "偏暗 ") + sample.Brightness.ToString("P0")
                         : sample.Reason;
-                    window.UpdateSceneStatus(sceneCoordinator.Ready ? MaterialNames.Scene(materialScene) : "正在确认场景", basis);
+                    window.UpdateSceneStatus(visualTransition.Waiting ? "等待窗口动画稳定" : sceneCoordinator.Ready ? MaterialNames.Scene(materialScene) : "正在确认场景", basis);
                 }
+                if (visualTransition.Waiting) timer.Interval = Math.Min(40, settings.PollMilliseconds);
                 // Confirm the target scene before the taskbar notification callback uses it.
                 if (commit.HasValue) CommitTheme(commit.Value);
                 window.UpdateStatus(sample.Reason, sample.Valid && !sample.ExplicitRule ? (double?)sample.Brightness : null, controller.Current.Tone, sample.IsWallpaper ? "壁纸" : "窗口");
@@ -620,7 +625,7 @@ namespace LumaBar
             BackColor = Color.FromArgb(22, 25, 32);
             ForeColor = Color.FromArgb(230, 235, 242);
             Font = new Font("Microsoft YaHei UI", 10);
-            AddLabel("LumaBar 0.6.2", 28, 24, 310, 45, 25, Color.White);
+            AddLabel("LumaBar 0.6.3", 28, 24, 310, 45, 25, Color.White);
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
             AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 76, 464, 30, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));

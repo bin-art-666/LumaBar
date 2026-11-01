@@ -131,12 +131,15 @@ namespace LumaBar
         { return Observe(window, brightness, current, now, false); }
 
         public Tone? Observe(long window, double brightness, Tone current, long now, bool explicitRule)
-        { return ObserveCore(window, brightness, current, now, explicitRule, false, false); }
+        { return ObserveCore(window, brightness, current, now, explicitRule, false, false, true); }
 
         public Tone? Observe(long window, double brightness, Tone current, long now, bool explicitRule, bool wallpaperSource)
-        { return ObserveCore(window, brightness, current, now, explicitRule, true, wallpaperSource); }
+        { return ObserveCore(window, brightness, current, now, explicitRule, true, wallpaperSource, true); }
 
-        private Tone? ObserveCore(long window, double brightness, Tone current, long now, bool explicitRule, bool trackSource, bool wallpaperSource)
+        public Tone? Observe(long window, double brightness, Tone current, long now, bool explicitRule, bool wallpaperSource, bool commitAllowed)
+        { return ObserveCore(window, brightness, current, now, explicitRule, true, wallpaperSource, commitAllowed); }
+
+        private Tone? ObserveCore(long window, double brightness, Tone current, long now, bool explicitRule, bool trackSource, bool wallpaperSource, bool commitAllowed)
         {
             if (trackSource)
             {
@@ -176,6 +179,8 @@ namespace LumaBar
             }
             if (history.Count < (candidateFast ? 2 : 3) || now - candidateSince < requiredDwell ||
                 now - lastSwitch < (candidateFast ? settings.SourceMinimumSwitchMilliseconds : settings.MinimumSwitchMilliseconds)) return null;
+            // Accumulate stability during the window animation without consuming a switch or cooldown.
+            if (!commitAllowed) return null;
             candidate = null;
             fastUntil = -1;
             lastSwitch = now;

@@ -142,6 +142,37 @@ namespace LumaBar
         { return scene == MaterialScene.Desktop ? "桌面" : scene == MaterialScene.Window ? "普通窗口 / 分屏" : "最大化 / 全屏"; }
     }
 
+    // A compositor animation may still be running after the logical window state changes.
+    // Keep the old appearance through a short settling window; do not animate tint values.
+    internal sealed class VisualTransitionGate
+    {
+        internal const int SettleMilliseconds = 220;
+        internal const int QuietMilliseconds = 80;
+        internal bool Waiting { get; private set; }
+        private bool known;
+        private MaterialScene settled, pending;
+        private long source, since, lastMotion, lastAt;
+        private Rectangle frame;
+        private int samples;
+        internal bool Observe(MaterialScene scene, long window, Rectangle bounds, long now)
+        {
+            if (!known || (scene != MaterialScene.Maximized && settled != MaterialScene.Maximized))
+            { Accept(scene); return true; }
+            if (scene == settled) { Waiting = false; samples = 0; return true; }
+            if (!Waiting || pending != scene || source != window || now - lastAt > 200)
+            {
+                Waiting = true; pending = scene; source = window;
+                frame = bounds; since = lastMotion = now; samples = 0;
+            }
+            if (frame != bounds) { frame = bounds; lastMotion = now; }
+            samples++; lastAt = now;
+            if (samples < 2 || now - since < SettleMilliseconds || now - lastMotion < QuietMilliseconds) return false;
+            Accept(scene); return true;
+        }
+        private void Accept(MaterialScene scene) { known = true; settled = scene; Waiting = false; samples = 0; }
+        internal void Reset() { known = Waiting = false; samples = 0; }
+    }
+
     internal sealed class SceneCoordinator
     {
         internal bool Ready { get; private set; }
