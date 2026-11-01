@@ -183,7 +183,7 @@ namespace LumaBar
         private void CommitTheme(Tone tone)
         {
             if (tone != controller.Current.Tone && materials != null) materials.InvalidatePending();
-            controller.Apply(tone);
+            controller.Apply(tone, delegate { ApplyMaterials(true); });
         }
         private void UpdateMaterialStatus()
         {
@@ -364,11 +364,12 @@ namespace LumaBar
                 if (sample.IsApplication && !String.IsNullOrEmpty(sample.ProcessName))
                 { lastApplication = sample.ProcessName; lastApplicationAt = now; }
                 Tone? wanted = DesiredTone(sample, current);
+                Tone? commit = null;
                 bool fixedMode = mode == "固定浅色" || mode == "固定深色";
                 if (fixedMode)
                 {
                     wanted = mode == "固定浅色" ? Tone.Light : Tone.Dark;
-                    CommitTheme(wanted.Value);
+                    commit = wanted;
                 }
                 if (sample.Valid)
                 {
@@ -378,19 +379,21 @@ namespace LumaBar
                     if (!fixedMode)
                     {
                         Tone? decision = engine.Observe(sample.DecisionContext, sample.DecisionBrightness, current, now, sample.ExplicitRule || sample.IsWallpaper, sample.IsWallpaper);
-                        if (decision.HasValue && mode != "仅检测（不修改）") CommitTheme(decision.Value);
+                        if (decision.HasValue && mode != "仅检测（不修改）") commit = decision;
                     }
                 }
                 else { engine.Reset(); timer.Interval = settings.PollMilliseconds; }
                 if (sample.Scene.HasValue || sample.Valid)
                 {
-                    sceneCoordinator.Observe(SceneFor(sample), sample.DecisionContext, mode == "仅检测（不修改）" ? null : wanted, controller.Current.Tone, now, settings.SourceStableMilliseconds);
+                    sceneCoordinator.Observe(SceneFor(sample), sample.DecisionContext, mode == "仅检测（不修改）" ? null : wanted, commit ?? current, now, settings.SourceStableMilliseconds);
                     if (sceneCoordinator.Ready) materialScene = sceneCoordinator.Current;
                     string basis = sample.Valid && !sample.ExplicitRule
                         ? (sample.IsWallpaper ? "壁纸" : "窗口内容") + (sample.Brightness >= .5 ? "偏亮 " : "偏暗 ") + sample.Brightness.ToString("P0")
                         : sample.Reason;
                     window.UpdateSceneStatus(sceneCoordinator.Ready ? MaterialNames.Scene(materialScene) : "正在确认场景", basis);
                 }
+                // Confirm the target scene before the taskbar notification callback uses it.
+                if (commit.HasValue) CommitTheme(commit.Value);
                 window.UpdateStatus(sample.Reason, sample.Valid && !sample.ExplicitRule ? (double?)sample.Brightness : null, controller.Current.Tone, sample.IsWallpaper ? "壁纸" : "窗口");
                 ApplyMaterials();
                 UpdateMaterialStatus();
@@ -429,6 +432,7 @@ namespace LumaBar
                 MessageBox.Show(window, "恢复失败，程序保持暂停。请检查日志后重试退出；恢复记录会保留。", "LumaBar");
                 return;
             }
+            Native.WaitForThemeRefresh(1500);
             exiting = true;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.SessionEnding -= OnSessionEnding;
@@ -616,7 +620,7 @@ namespace LumaBar
             BackColor = Color.FromArgb(22, 25, 32);
             ForeColor = Color.FromArgb(230, 235, 242);
             Font = new Font("Microsoft YaHei UI", 10);
-            AddLabel("LumaBar 0.6.1", 28, 24, 310, 45, 25, Color.White);
+            AddLabel("LumaBar 0.6.2", 28, 24, 310, 45, 25, Color.White);
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
             AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 76, 464, 30, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));

@@ -86,7 +86,7 @@ namespace LumaBar
         public void Delete() { if (File.Exists(path)) File.Delete(path); }
     }
 
-    internal sealed class RegistryThemeStore : IThemeStore
+    internal sealed class RegistryThemeStore : ICoordinatedThemeStore
     {
         private const string Key = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
         private const string Name = "SystemUsesLightTheme";
@@ -110,5 +110,6 @@ namespace LumaBar
             }
         }
         public void Refresh() { Native.RefreshTaskbars(); }
+        public void Refresh(Action afterTaskbars) { Native.RefreshTaskbars(afterTaskbars); }
     }
 }

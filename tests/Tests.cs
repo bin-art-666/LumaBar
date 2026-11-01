@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace LumaBar
 {
-    internal sealed class FakeStore : IThemeStore
+    internal sealed class FakeStore : ICoordinatedThemeStore
     {
         public ThemeValue Value = new ThemeValue(true, 1);
         public int Writes;
@@ -22,6 +22,7 @@ namespace LumaBar
             Value = value; Writes++;
         }
         public void Refresh() { Refreshes++; }
+        public void Refresh(Action afterTaskbars) { Refresh(); if (afterTaskbars != null) afterTaskbars(); }
     }
     internal sealed class FakeJournal : ISessionJournal
     {
@@ -93,6 +94,7 @@ namespace LumaBar
                     return 0;
                 }
                 if (args.Length == 1 && args[0] == "--shell") { ShellTest(); return 0; }
+                if (args.Length == 2 && args[0] == "--transition") { TransitionShellTest(args[1]); return 0; }
                 if (args.Length == 1 && args[0] == "--materials") { MaterialsShellTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--material-watchdog") { MaterialWatchdogTest(); return 0; }
                 if (args.Length == 2 && args[0] == "--material-child")
@@ -241,6 +243,48 @@ namespace LumaBar
                 finally { mutex.ReleaseMutex(); }
             }
         }
+        private static void TransitionShellTest(string settingsPath)
+        {
+            Application.EnableVisualStyles(); Native.EnableDpi();
+            using (Mutex mutex = new Mutex(false, @"Local\LumaBar-" + WindowsIdentity.GetCurrent().User.Value))
+            {
+                bool acquired;
+                try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
+                if (!acquired) throw new Exception("Exit LumaBar before the transition regression.");
+                ThemeController theme = new ThemeController(new RegistryThemeStore(), new FakeJournal());
+                ThemeValue before = theme.Current;
+                try
+                {
+                    Settings settings = Files.Json.Deserialize<Settings>(File.ReadAllText(settingsPath)); settings.Validate();
+                    using (MaterialController material = new MaterialController())
+                    {
+                        // Initialize COM first so the measurement covers an ordinary restore.
+                        ApplyAndWait(material, settings.Glass, Tone.Dark);
+                        Check(material.Snapshot.State == MaterialState.Applied, "native glass component connects before transition measurement");
+                        for (int iteration = 0; iteration < 3; iteration++)
+                        {
+                            theme.Apply(Tone.Light);
+                            long initial = material.CompletedUpdates;
+                            material.Apply(settings.Glass, MaterialScene.Maximized, Tone.Light, true);
+                            WaitUntil(delegate { return material.CompletedUpdates > initial; }); Settle();
+                            MaterialPlan target = ReadabilityPolicy.Capture(settings.Glass, MaterialScene.Window, Tone.Dark);
+                            long completed = material.CompletedUpdates;
+                            long submittedAt = -1;
+                            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+                            theme.Apply(Tone.Dark, delegate { submittedAt = elapsed.ElapsedMilliseconds; material.Apply(target, true); });
+                            while (material.CompletedUpdates == completed && elapsed.ElapsedMilliseconds < 5000)
+                            { Application.DoEvents(); Thread.Sleep(2); }
+                            Console.WriteLine("Light fullscreen -> dark window glass: callback={0}ms, applied={1}ms, post-theme gap={2}ms", submittedAt, elapsed.ElapsedMilliseconds, elapsed.ElapsedMilliseconds - submittedAt);
+                            Check(submittedAt >= 0 && material.CompletedUpdates > completed && material.Snapshot.State == MaterialState.Applied,
+                                "matching native glass applies in coordinated restore " + iteration);
+                        }
+                    }
+                }
+                finally { theme.Restore(); Native.WaitForThemeRefresh(1500); mutex.ReleaseMutex(); }
+                Check(before.Same(theme.Current), "transition regression restores original system theme");
+            }
+        }
+
         private static void ApplyAndWait(MaterialController controller, GlassSettings glass, Tone tone)
         {
             long completed = controller.CompletedUpdates;
@@ -664,6 +708,14 @@ namespace LumaBar
                 Check(ThemeWallpaperAnalyzer.Analyze(wallpaper, description) < .1, "classic theme analyzes whole wallpaper despite bright taskbar strip");
                 Check(WallpaperAnalyzer.Analyze(wallpaper, description) > .9, "glass keeps independent taskbar-region sampling");
             }
+            FakeStore transitionStore = new FakeStore();
+            ThemeController transition = new ThemeController(transitionStore, new FakeJournal());
+            bool materialSawNewTone = false;
+            transition.Apply(Tone.Dark, delegate { materialSawNewTone = transitionStore.Value.Tone == Tone.Dark && transitionStore.Refreshes == 1; });
+            Check(materialSawNewTone, "material callback sees new registry tone immediately after taskbar refresh");
+            int callbacks = 0;
+            transition.Apply(Tone.Dark, delegate { callbacks++; });
+            Check(callbacks == 0 && transitionStore.Refreshes == 1, "unchanged tone does not restart notification or material commit");
             Settings custom = new Settings { PollMilliseconds = 300, SourceStableMilliseconds = 100, TimingVersion = 2 }; custom.Validate();
             Check(custom.SourceStableMilliseconds == 100, "custom timing remains unchanged");
         }
@@ -675,9 +727,17 @@ namespace LumaBar
             {
                 IntPtr handle = receiver.Handle;
                 System.Diagnostics.Stopwatch foreground = System.Diagnostics.Stopwatch.StartNew();
-                Native.RefreshTaskbars();
-                Console.WriteLine("Classic synchronous refresh elapsed: {0}ms", foreground.ElapsedMilliseconds);
-                Check(receiver.Sections.Contains("ImmersiveColorSet"), "normal windows receive synchronous classic theme notifications");
+                bool materialSubmitted = false;
+                Native.RefreshTaskbars(delegate {
+                    Check(!receiver.Sections.Contains("ImmersiveColorSet"), "matching material submits before unrelated windows are notified");
+                    materialSubmitted = true;
+                });
+                Console.WriteLine("Taskbar foreground notification elapsed: {0}ms", foreground.ElapsedMilliseconds);
+                Check(materialSubmitted, "taskbar completion triggers coordinated material commit");
+                System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
+                while ((!Native.WaitForThemeRefresh(0) || !receiver.Sections.Contains("ImmersiveColorSet")) && wait.ElapsedMilliseconds < 5000)
+                { Application.DoEvents(); Thread.Sleep(5); }
+                Check(receiver.Sections.Contains("ImmersiveColorSet"), "background notifications still reach normal windows");
                 Check(!receiver.Sections.Contains("TraySettings"), "normal-window notification retains original message contract");
             }
             Check(before.Same(new RegistryThemeStore().Read()), "refresh-speed test leaves system theme preference unchanged");

@@ -203,6 +203,11 @@ namespace LumaBar
         void Refresh();
     }
 
+    public interface ICoordinatedThemeStore : IThemeStore
+    {
+        void Refresh(Action afterTaskbars);
+    }
+
     public sealed class SessionRecord
     {
         public int Version = 1;
@@ -239,7 +244,8 @@ namespace LumaBar
             return (record.LastWritten != null && value.Same(record.LastWritten)) ||
                 (record.Pending != null && value.Same(record.Pending));
         }
-        public void Apply(Tone tone)
+        public void Apply(Tone tone) { Apply(tone, null); }
+        public void Apply(Tone tone, Action afterTaskbars)
         {
             ThemeValue current = store.Read();
             if (session != null && !IsOwned(session, current))
@@ -254,7 +260,9 @@ namespace LumaBar
             session.LastWritten = next;
             session.Pending = null;
             journal.Save(session);
-            store.Refresh();
+            ICoordinatedThemeStore coordinated = store as ICoordinatedThemeStore;
+            if (coordinated != null) coordinated.Refresh(afterTaskbars);
+            else { store.Refresh(); if (afterTaskbars != null) afterTaskbars(); }
         }
         public bool Restore()
         {

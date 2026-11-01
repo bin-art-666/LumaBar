@@ -154,6 +154,7 @@ namespace LumaBar
             if (samples == 0 || pending != scene || context != source || now - lastAt > 1200)
             { pending = scene; context = source; since = now; samples = 0; }
             samples++; lastAt = now;
+            Ready = false;
             if (samples < 2 || now - since < dwell || (wanted.HasValue && wanted.Value != actual)) return;
             Current = pending; Ready = true;
         }

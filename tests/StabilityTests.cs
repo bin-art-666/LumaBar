@@ -147,6 +147,7 @@ namespace LumaBar
             Check(scene.Ready && scene.Current == MaterialScene.Desktop, "glass scene commits once valid samples and matching tone are confirmed");
             scene.Observe(MaterialScene.Maximized, 2, Tone.Dark, Tone.Light, 200, 100);
             scene.Observe(MaterialScene.Maximized, 2, Tone.Dark, Tone.Light, 300, 100);
+            Check(!scene.Ready, "pending scene cannot replay old native material while waiting for tone");
             Check(scene.Current == MaterialScene.Desktop, "maximize does not apply a new material with the old glyph mode");
             scene.Observe(MaterialScene.Maximized, 2, Tone.Dark, Tone.Dark, 350, 100);
             Check(scene.Current == MaterialScene.Maximized, "confirmed maximize switches material with the new glyph mode");
@@ -157,6 +158,10 @@ namespace LumaBar
             Check(!scene.Ready, "resume must reconfirm scene after pause or session suspension");
             scene.Observe(MaterialScene.Maximized, 4, null, Tone.Dark, 600, 100);
             scene.Observe(MaterialScene.Maximized, 4, null, Tone.Dark, 700, 100);
+            scene.Observe(MaterialScene.Window, 5, Tone.Dark, Tone.Light, 800, 100);
+            Check(!scene.Ready, "restoring a light fullscreen app does not submit the previous fullscreen brush");
+            scene.Observe(MaterialScene.Window, 5, Tone.Dark, Tone.Dark, 950, 100);
+            Check(scene.Ready && scene.Current == MaterialScene.Window, "confirmed restore selects glass in the same observation as the dark tone");
             Check(scene.Ready, "held applications can confirm material without forcing a theme change");
         }
         private static MaterialPlan TestPlan(Tone tone)
