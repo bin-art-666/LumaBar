@@ -7,10 +7,33 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+[assembly: System.Reflection.AssemblyVersion("0.6.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.6.6.0")]
+
 namespace LumaBar
 {
     internal static class Program
     {
+        internal static string ActivationName { get { return @"Local\LumaBar-Activate-" + WindowsIdentity.GetCurrent().User.Value; } }
+        internal static bool RequestActivation(string eventName = null)
+        {
+            // The mutex may be acquired before the tray context has created its event.
+            for (int attempt = 0; attempt < 40; attempt++)
+            {
+                try
+                {
+                    using (EventWaitHandle activation = EventWaitHandle.OpenExisting(eventName ?? ActivationName))
+                    {
+                        IntPtr window = eventName == null ? Native.FindWindow(null, "LumaBar") : IntPtr.Zero;
+                        uint pid; Native.GetWindowThreadProcessId(window, out pid);
+                        if (pid != 0) Native.AllowSetForegroundWindow(pid);
+                        activation.Set(); return true;
+                    }
+                }
+                catch (WaitHandleCannotBeOpenedException) { Thread.Sleep(50); }
+            }
+            return false;
+        }
         [STAThread]
         private static int Main(string[] args)
         {
@@ -26,8 +49,7 @@ namespace LumaBar
                 if (!acquired)
                 {
                     if (Array.IndexOf(args, "--startup") >= 0) return 0;
-                    Ui.Message(null, "LumaBar 已经运行。请在系统托盘中打开它，或先退出另一个副本。", "LumaBar");
-                    return 2;
+                    return RequestActivation() ? 0 : 2;
                 }
                 try
                 {
@@ -71,6 +93,10 @@ namespace LumaBar
         private readonly StatusWindow window;
         private readonly Stopwatch clock = Stopwatch.StartNew();
         private readonly ToolStripMenuItem pauseItem;
+        private readonly EventWaitHandle activation;
+        private long recoveryAt = -1;
+        private bool refreshAfterRecovery;
+        internal bool RecoveryPending { get { return recoveryAt >= 0; } }
         private bool paused;
         private bool sessionLocked;
         private bool suspended;
@@ -84,9 +110,10 @@ namespace LumaBar
         internal bool StatusWindowVisible { get { return window.Visible; } }
         internal bool StatusHandleCreated { get { return window.IsHandleCreated; } }
 
-        internal TrayApp(Settings settings, ThemeController controller, bool monitorOnly, bool startHidden = false)
+        internal TrayApp(Settings settings, ThemeController controller, bool monitorOnly, bool startHidden = false, string activationName = null)
         {
             this.settings = settings;
+            activation = new EventWaitHandle(false, EventResetMode.AutoReset, activationName ?? Program.ActivationName);
             this.controller = controller;
             engine = new DecisionEngine(settings);
             window = new StatusWindow();
@@ -133,6 +160,8 @@ namespace LumaBar
             SystemEvents.SessionSwitch += OnSessionSwitch;
             SystemEvents.SessionEnding += OnSessionEnding;
             SystemEvents.PowerModeChanged += OnPowerMode;
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettings;
+            window.ShellRestarted += delegate { ScheduleRecovery("Explorer taskbar recreated"); };
             // Create a handle for session callbacks even when logging in to tray.
             IntPtr handle = window.Handle;
             if (!startHidden) window.Show();
@@ -170,7 +199,7 @@ namespace LumaBar
             GlassSettings glass = previewGlass ?? settings.Glass;
             MaterialPlan plan = ReadabilityPolicy.Capture(glass, materialScene, tone);
             string key = plan.Key;
-            if (visualKey != null && visualKey != key) blend.Begin();
+            if (visualKey != null && visualKey != key) blend.Begin(settings.TransitionMilliseconds);
             visualKey = key;
             return plan;
         }
@@ -310,14 +339,29 @@ namespace LumaBar
             if (args.Reason == SessionSwitchReason.SessionLock)
                 Dispatch(delegate { sessionLocked = true; ReleaseForIdle(); });
             else if (args.Reason == SessionSwitchReason.SessionUnlock)
-                Dispatch(delegate { sessionLocked = false; engine.Reset(); });
+                Dispatch(delegate { sessionLocked = false; ScheduleRecovery("Session unlocked"); });
         }
         private void OnPowerMode(object sender, PowerModeChangedEventArgs args)
         {
             if (args.Mode == PowerModes.Suspend)
                 Dispatch(delegate { suspended = true; ReleaseForIdle(); });
             else if (args.Mode == PowerModes.Resume)
-                Dispatch(delegate { suspended = false; engine.Reset(); WallpaperSampler.Invalidate(); });
+                Dispatch(delegate { suspended = false; ScheduleRecovery("System resumed"); });
+        }
+        private void OnDisplaySettings(object sender, EventArgs args)
+        { Dispatch(delegate { ScheduleRecovery("Display settings changed"); }); }
+        internal void ScheduleRecovery(string reason)
+        {
+            if (exiting) return;
+            blend.Cancel(); visualKey = null;
+            engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
+            timingSource = null; burstUntil = 0;
+            WallpaperSampler.Invalidate();
+            if (materials != null) { materials.InvalidatePending(); materials.Retry(); }
+            recoveryAt = clock.ElapsedMilliseconds + 300;
+            refreshAfterRecovery = true;
+            timer.Interval = 75;
+            Files.Log("Appearance recovery scheduled: " + reason);
         }
         private void OnSessionEnding(object sender, SessionEndingEventArgs args)
         {
@@ -366,6 +410,7 @@ namespace LumaBar
             if (exiting) return;
             try
             {
+                if (activation.WaitOne(0)) ShowWindow();
                 if (paused || sessionLocked || suspended || SystemInformation.HighContrast)
                 {
                     if (SystemInformation.HighContrast) ReleaseForIdle();
@@ -382,6 +427,16 @@ namespace LumaBar
                     window.SetPaused(true);
                     window.UpdateStatus("检测到外部主题更改，已暂停", null, controller.Current.Tone);
                     return;
+                }
+                if (recoveryAt >= 0)
+                {
+                    if (clock.ElapsedMilliseconds < recoveryAt) return;
+                    recoveryAt = -1;
+                }
+                if (refreshAfterRecovery)
+                {
+                    refreshAfterRecovery = false;
+                    if (mode != "仅检测（不修改）") controller.Refresh();
                 }
                 // Leave the UI timer free to fade at display cadence; thumbnail reads can take 30ms.
                 if (blend.Active) { timer.Interval = 40; return; }
@@ -474,6 +529,8 @@ namespace LumaBar
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.SessionEnding -= OnSessionEnding;
             SystemEvents.PowerModeChanged -= OnPowerMode;
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettings;
+            activation.Dispose();
             if (materials != null) materials.Dispose();
             blend.Dispose();
             tray.Visible = false;
@@ -492,6 +549,7 @@ namespace LumaBar
         internal event Action<GlassSettings> AppearancePreview;
         private readonly AppearanceEditor appearance;
         private readonly ComboBox pace;
+        private readonly ComboBox transition;
         private readonly CheckBox startup;
         private readonly DataGridView rules;
         private readonly bool originalStartup;
@@ -510,7 +568,7 @@ namespace LumaBar
             MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(247, 249, 252);
-            TabControl tabs = new SettingsPages { Location = new Point(20, 108), Size = new Size(620, 548), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
+            TabControl tabs = new SettingsPages { Location = new Point(20, 118), Size = new Size(620, 538), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
             TabPage general = new TabPage("常规") { BackColor = Color.White, AutoScroll = true };
             TabPage applications = new TabPage("应用规则") { BackColor = Color.White, AutoScroll = true };
             tabs.TabPages.Add(general); tabs.TabPages.Add(applications); Controls.Add(tabs);
@@ -539,9 +597,16 @@ namespace LumaBar
                     settings.ContentStableMilliseconds == preset.ContentStableMilliseconds && settings.MinimumSwitchMilliseconds == preset.MinimumSwitchMilliseconds &&
                     settings.SourceStableMilliseconds == preset.SourceStableMilliseconds && settings.SourceMinimumSwitchMilliseconds == preset.SourceMinimumSwitchMilliseconds) pace.SelectedIndex = i;
             }
+            pace.Name = "Pace"; pace.AccessibleName = "明暗判断速度";
             general.Controls.Add(pace);
             general.Controls.Add(new Label { Text = "灵敏：响应更快　·　均衡：推荐　·　舒缓：减少切换\n速度调整同时作用于最大化、还原和窗口内容变化。", Location = new Point(24, 305), Size = new Size(550, 62), ForeColor = Color.DimGray });
-            LinkLabel license = new LinkLabel { Text = "关于与开源许可（含 TranslucentTB）", Location = new Point(24, 382), Size = new Size(550, 28) };
+            general.Controls.Add(new Label { Text = "过渡动画", Location = new Point(24, 382), Size = new Size(160, 27) });
+            transition = new ModernComboBox { Name = "Transition", AccessibleName = "过渡动画", DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(190, 379), Size = new Size(260, 30) };
+            transition.Items.AddRange(new object[] { "标准（当前效果）", "柔和", "关闭" });
+            transition.SelectedIndex = settings.Transition == "soft" ? 1 : settings.Transition == "off" ? 2 : 0;
+            general.Controls.Add(transition);
+            general.Controls.Add(new Label { Text = "只调整过渡动画，不影响明暗判断速度与玻璃参数。", Location = new Point(24, 425), Size = new Size(550, 36), ForeColor = Color.DimGray });
+            LinkLabel license = new LinkLabel { Text = "关于与开源许可（含 TranslucentTB）", Location = new Point(24, 475), Size = new Size(550, 28) };
             license.LinkClicked += delegate { try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "THIRD_PARTY_NOTICES.md") + "\""); } catch (Exception error) { Ui.Message(this, error.Message, "LumaBar"); } };
             general.Controls.Add(license);
             applications.Controls.Add(new Label { Text = "填写进程名（如 Code.exe、WeChat.exe）。规则仅在最大化 / 全屏时生效。\n普通窗口仍跟随壁纸；删除规则后恢复自动识别。", Location = new Point(16, 14), Size = new Size(580, 52) });
@@ -581,6 +646,9 @@ namespace LumaBar
                 navigation[index].Click += delegate { tabs.SelectedIndex = target; }; Controls.Add(navigation[index]);
             }
             Ui.Apply(this); BackColor = Ui.Canvas;
+            Ui.OrderTabStops(general); Ui.OrderTabStops(applications);
+            for (int index = 0; index < navigation.Length; index++) navigation[index].TabIndex = index;
+            tabs.TabIndex = 3; tabs.TabStop = false; apply.TabIndex = 4; cancel.TabIndex = 5;
             Action updateNavigation = delegate { for(int index = 0; index < navigation.Length; index++) { navigation[index].Selected = index == tabs.SelectedIndex; navigation[index].BackColor = index == tabs.SelectedIndex ? Ui.AccentSoft : Ui.Canvas; navigation[index].ForeColor = index == tabs.SelectedIndex ? Ui.Accent : Ui.Muted; navigation[index].Invalidate(); } };
             tabs.SelectedIndexChanged += delegate { updateNavigation(); }; tabs.SelectedIndex = 0; updateNavigation();
             Shown += delegate { updateNavigation(); };
@@ -614,6 +682,7 @@ namespace LumaBar
                 if (startupChanged) StartupRegistration.Set(startup.Checked);
                 bool saved = save(delegate(Settings next) {
                     if (selectedPace != null) next.SetPace(selectedPace);
+                    next.Transition = transition.SelectedIndex == 1 ? "soft" : transition.SelectedIndex == 2 ? "off" : "standard";
                     next.ApplicationRules = edited.ApplicationRules;
                     next.Glass = appearance.Value;
                 });
@@ -641,6 +710,13 @@ namespace LumaBar
 
     internal sealed class StatusWindow : Form
     {
+        private static readonly uint taskbarCreated = Native.RegisterWindowMessage("TaskbarCreated");
+        internal event Action ShellRestarted;
+        protected override void WndProc(ref Message message)
+        {
+            base.WndProc(ref message);
+            if (taskbarCreated != 0 && message.Msg == taskbarCreated && ShellRestarted != null) ShellRestarted();
+        }
         internal event Action HideRequested;
         internal event Action ExitRequested;
         internal event Action PauseRequested;
@@ -678,7 +754,7 @@ namespace LumaBar
             Font = Ui.BodyFont;
             Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(30,27), Size = new Size(40,40), SizeMode = PictureBoxSizeMode.Zoom });
             AddLabel("LumaBar", 82, 20, 270, 40, 23, Color.White);
-            AddLabel("0.6.5 · 随光而动", 84, 58, 260, 22, 9, Color.FromArgb(157,174,197));
+            AddLabel("0.6.6 · 随光而动", 84, 58, 260, 22, 9, Color.FromArgb(157,174,197));
             AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
             AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 93, 464, 26, 11, Color.FromArgb(157, 174, 197));
             theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));
@@ -699,7 +775,8 @@ namespace LumaBar
             retry.Text = "重新应用任务栏外观";
             AddButton("收起到托盘", 30, 490, 222, delegate { if (HideRequested != null) HideRequested(); });
             AddButton("退出并恢复", 268, 490, 222, delegate { if (ExitRequested != null) ExitRequested(); });
-            Ui.Apply(this); BackColor = Ui.Canvas; ForeColor = Ui.Text;
+            Ui.Apply(this); BackColor = Ui.Canvas;
+            Ui.OrderTabStops(this); ForeColor = Ui.Text;
             FormClosed += delegate { materialTip.Dispose(); };
             FormClosing += delegate(object sender, FormClosingEventArgs args)
             {

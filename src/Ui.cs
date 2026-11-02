@@ -51,6 +51,17 @@ namespace LumaBar
             GraphicsPath p = new GraphicsPath(); p.AddArc(rect.X,rect.Y,d,d,180,90); p.AddArc(rect.Right-d,rect.Y,d,d,270,90);
             p.AddArc(rect.Right-d,rect.Bottom-d,d,d,0,90); p.AddArc(rect.X,rect.Bottom-d,d,d,90,90); p.CloseFigure(); return p;
         }
+        internal static void OrderTabStops(Control parent)
+        {
+            System.Collections.Generic.List<Control> ordered = new System.Collections.Generic.List<Control>();
+            foreach (Control child in parent.Controls) ordered.Add(child);
+            ordered.Sort(delegate(Control a, Control b) { int row = a.Top.CompareTo(b.Top); return row != 0 ? row : a.Left.CompareTo(b.Left); });
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                Control child = ordered[i]; child.TabIndex = i;
+                if (String.IsNullOrEmpty(child.AccessibleName) && !String.IsNullOrEmpty(child.Text)) child.AccessibleName = child.Text;
+            }
+        }
         internal static void Apply(Control root)
         {
             foreach (Control child in root.Controls)
@@ -170,12 +181,14 @@ namespace LumaBar
         protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
         protected override void OnPaint(PaintEventArgs e)
         {
+            e.Graphics.Clear(Parent == null ? Ui.Canvas : Parent.BackColor);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             Color fill = Primary ? Ui.Accent : Selected || hover || down ? Ui.AccentSoft : BackColor;
             Color text = Primary ? (Ui.Dark ? Color.FromArgb(20,45,36) : Color.White) : Selected ? Ui.Accent : ForeColor;
             using (GraphicsPath path = Ui.Round(new RectangleF(.5f,.5f,Width-1,Height-1),7*Math.Max(1,Height/32f)))
             using (Brush brush = new SolidBrush(fill)) using (Pen pen = new Pen(Focused ? Ui.Accent : Ui.Border)) { e.Graphics.FillPath(brush,path); e.Graphics.DrawPath(pen,path); }
             TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled ? text : Ui.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
+            if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle,-4,-4), Enabled ? text : Ui.Muted, fill);
         }
     }
     internal sealed class ModernComboBox : ComboBox
@@ -207,6 +220,9 @@ namespace LumaBar
             if (message.Msg == 0x0085) { message.Result=IntPtr.Zero; return; }
             base.WndProc(ref message);
         }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void OnSelectedIndexChanged(EventArgs e) { base.OnSelectedIndexChanged(e); Invalidate(); }
         private void PaintBox(Graphics graphics)
         {
             float scale=Math.Max(1,Font.Height/15f);
@@ -218,6 +234,7 @@ namespace LumaBar
             int pad=(int)(10*scale), arrow=(int)(30*scale);
             string text=SelectedIndex>=0?GetItemText(SelectedItem):Text;
             TextRenderer.DrawText(graphics,text,Font,new Rectangle(pad,0,Math.Max(1,Width-pad-arrow),Height),Enabled?Ui.Text:Ui.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
+            if(Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(graphics,Rectangle.Inflate(ClientRectangle,-4,-4),Ui.Text,Ui.Surface);
             float x=Width-16*scale,y=Height/2f;
             using(Pen pen=new Pen(Ui.Muted,1.4f*scale))graphics.DrawLines(pen,new PointF[]{new PointF(x-4*scale,y-2*scale),new PointF(x,y+2*scale),new PointF(x+4*scale,y-2*scale)});
         }
@@ -245,6 +262,25 @@ namespace LumaBar
             float value=left+width*(Value-Minimum)/Math.Max(1f,Maximum-Minimum);
             using(Pen track=new Pen(Ui.Border,4*scale))using(Pen fill=new Pen(Enabled?Ui.Accent:Ui.Muted,4*scale)){track.StartCap=track.EndCap=fill.StartCap=fill.EndCap=LineCap.Round;e.Graphics.DrawLine(track,left,y,left+width,y);e.Graphics.DrawLine(fill,left,y,value,y);}
             using(Brush brush=new SolidBrush(Ui.Surface))using(Pen edge=new Pen(Enabled?Ui.Accent:Ui.Muted,3*scale)){e.Graphics.FillEllipse(brush,value-7*scale,y-7*scale,14*scale,14*scale);e.Graphics.DrawEllipse(edge,value-7*scale,y-7*scale,14*scale,14*scale);}
+            if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics,Rectangle.Inflate(ClientRectangle,-2,-2),Ui.Accent,Parent == null ? Ui.Surface : Parent.BackColor);
+        }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            long next = Value;
+            switch(e.KeyCode)
+            {
+                case Keys.Left: case Keys.Down: next -= SmallChange; break;
+                case Keys.Right: case Keys.Up: next += SmallChange; break;
+                case Keys.PageDown: next -= LargeChange; break;
+                case Keys.PageUp: next += LargeChange; break;
+                case Keys.Home: next = Minimum; break;
+                case Keys.End: next = Maximum; break;
+                default: base.OnKeyDown(e); return;
+            }
+            Value = (int)Math.Max(Minimum,Math.Min(Maximum,next)); e.Handled = true; e.SuppressKeyPress = true;
+            base.OnKeyDown(e);
         }
         private void ChangeAt(int x) { float pad=10*Math.Max(1,Font.Height/15f); Value=Math.Max(Minimum,Math.Min(Maximum,(int)Math.Round(Minimum+(Maximum-Minimum)*(x-pad)/Math.Max(1,Width-2*pad)))); }
         protected override void OnMouseDown(MouseEventArgs e) { if(Enabled&&e.Button==MouseButtons.Left){Focus();Capture=true;ChangeAt(e.X);}base.OnMouseDown(e); }

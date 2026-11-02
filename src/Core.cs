@@ -10,6 +10,10 @@ namespace LumaBar
     public sealed class Settings
     {
         public GlassSettings Glass = new GlassSettings();
+        // Animation choice is independent from detection dwell/cooldown and glass.
+        public string Transition = "standard";
+        [System.Web.Script.Serialization.ScriptIgnore]
+        public int TransitionMilliseconds { get { return Transition == "off" ? 0 : Transition == "soft" ? 280 : 180; } }
         public int TimingVersion;
         public int PollMilliseconds = 350;
         public int StableMilliseconds = 700;
@@ -26,6 +30,8 @@ namespace LumaBar
 
         public void Validate()
         {
+            if (Transition != "standard" && Transition != "soft" && Transition != "off")
+                throw new ArgumentException("Transition 应为 standard/soft/off。");
             RestoreClassicTiming();
             if (Glass == null) Glass = new GlassSettings();
             Glass.Validate();

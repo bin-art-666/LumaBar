@@ -40,7 +40,7 @@ namespace LumaBar
     {
         private static void StabilityTests()
         {
-            ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); UiConsistencyTests(); MaterialRecoveryTests();
+            RecoveryInteractionTests(); ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); UiConsistencyTests(); MaterialRecoveryTests();
             using (StatusWindow window = new StatusWindow())
             {
                 int retry = 0; window.RetryRequested += delegate { retry++; };
@@ -53,6 +53,72 @@ namespace LumaBar
                 Check(retry == 1, "fallback state exposes a working one-click retry action");
                 window.UpdateMaterialStatus("仅检测", false, false);
                 Check(action != null && !action.Visible, "monitor-only status hides material modification actions");
+            }
+        }
+        private static void RecoveryInteractionTests()
+        {
+            using (StatusWindow messageTarget = new StatusWindow { AllowClose = true })
+            {
+                int restarts = 0; messageTarget.ShellRestarted += delegate { restarts++; };
+                Message restart = Message.Create(messageTarget.Handle,(int)Native.RegisterWindowMessage("TaskbarCreated"),IntPtr.Zero,IntPtr.Zero);
+                typeof(StatusWindow).GetMethod("WndProc",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).Invoke(messageTarget,new object[] { restart });
+                Check(restarts == 1, "Explorer taskbar recreation message reaches appearance recovery");
+            }
+            Settings original = new Settings(); original.Validate();
+            string glass = Files.Json.Serialize(original.Glass);
+            string timing = original.SourceStableMilliseconds + ":" + original.MinimumSwitchMilliseconds;
+            Check(original.TransitionMilliseconds == 180, "existing settings retain the 180ms default blend");
+            original.Transition = "soft"; original.Validate();
+            Check(original.TransitionMilliseconds == 280 && Files.Json.Serialize(original.Glass) == glass && timing == original.SourceStableMilliseconds + ":" + original.MinimumSwitchMilliseconds,
+                "soft animation changes neither glass nor detection timing");
+            original.Transition = "off"; original.Validate();
+            using (TaskbarBlend disabled = new TaskbarBlend()) { disabled.Begin(original.TransitionMilliseconds); Check(!disabled.Active, "disabled animation creates no taskbar overlays"); }
+            Settings loaded = Files.Json.Deserialize<Settings>(Files.Json.Serialize(original)); loaded.Validate();
+            Check(loaded.Transition == "off" && !Files.Json.Serialize(original).Contains("TransitionMilliseconds"), "animation preference round trips without a derived duration setting");
+            bool invalid = false; try { new Settings { Transition = "unknown" }.Validate(); } catch(ArgumentException) { invalid = true; }
+            Check(invalid, "invalid animation choice is rejected");
+            Settings saved = new Settings(); saved.Validate();
+            using (PreferencesWindow preferences = new PreferencesWindow(saved,null,delegate(Action<Settings> change) { change(saved); saved.Validate(); return true; }))
+            {
+                TabControl pages = (TabControl)preferences.Controls[0];
+                ComboBox animation = (ComboBox)pages.TabPages[0].Controls["Transition"];
+                Check(animation.SelectedIndex == 0 && animation.AccessibleName == "过渡动画", "animation selector defaults to current effect and has an accessible name");
+                animation.SelectedIndex = 1; preferences.Show(); Pump();
+                foreach(Control control in preferences.Controls) if(control is Button && control.Text == "保存并应用") ((Button)control).PerformClick();
+                Check(saved.Transition == "soft" && Files.Json.Serialize(saved.Glass) == glass, "saving animation preserves all glass values");
+            }
+            string eventName = @"Local\LumaBar-Test-Activate-" + Guid.NewGuid().ToString("N");
+            FakeStore store = new FakeStore();
+            using (TrayApp app = new TrayApp(new Settings(),new ThemeController(store,new FakeJournal()),true,true,eventName))
+            {
+                Check(!app.StatusWindowVisible && Program.RequestActivation(eventName), "second launch signals the existing hidden instance");
+                System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
+                while(!app.StatusWindowVisible && wait.ElapsedMilliseconds < 2000) { Application.DoEvents(); Thread.Sleep(5); }
+                Check(app.StatusWindowVisible, "activation opens the existing main window without another instance");
+                app.ScheduleRecovery("test display change"); app.ScheduleRecovery("test duplicate display change");
+                Check(app.RecoveryPending, "display recovery requests coalesce into a pending settle interval");
+                int refreshes = store.Refreshes;
+                wait.Restart(); while(app.RecoveryPending && wait.ElapsedMilliseconds < 2000) { Application.DoEvents(); Thread.Sleep(5); }
+                Check(!app.RecoveryPending && store.Refreshes == refreshes && store.Writes == 0,
+                    "monitor-only recovery settles without writing or refreshing the real theme");
+                // Simulate lifecycle notifications through the same event handlers;
+                // do not lock or suspend the user's computer during a coding session.
+                System.Reflection.BindingFlags hidden = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                typeof(TrayApp).GetMethod("OnSessionSwitch",hidden).Invoke(app,new object[] { null,new Microsoft.Win32.SessionSwitchEventArgs(Microsoft.Win32.SessionSwitchReason.SessionLock) });
+                Pump();
+                Check((bool)typeof(TrayApp).GetField("sessionLocked",hidden).GetValue(app), "session lock notification enters idle restoration state");
+                typeof(TrayApp).GetMethod("OnSessionSwitch",hidden).Invoke(app,new object[] { null,new Microsoft.Win32.SessionSwitchEventArgs(Microsoft.Win32.SessionSwitchReason.SessionUnlock) });
+                Application.DoEvents();
+                Check(!(bool)typeof(TrayApp).GetField("sessionLocked",hidden).GetValue(app) && app.RecoveryPending, "session unlock schedules a fresh recovery instead of reusing a pending scene");
+                typeof(TrayApp).GetMethod("OnPowerMode",hidden).Invoke(app,new object[] { null,new Microsoft.Win32.PowerModeChangedEventArgs(Microsoft.Win32.PowerModes.Suspend) });
+                Pump();
+                Check((bool)typeof(TrayApp).GetField("suspended",hidden).GetValue(app), "suspend notification releases managed appearance");
+                typeof(TrayApp).GetMethod("OnPowerMode",hidden).Invoke(app,new object[] { null,new Microsoft.Win32.PowerModeChangedEventArgs(Microsoft.Win32.PowerModes.Resume) });
+                Application.DoEvents();
+                Check(!(bool)typeof(TrayApp).GetField("suspended",hidden).GetValue(app) && app.RecoveryPending, "resume schedules a fresh settled scene");
+                typeof(TrayApp).GetMethod("OnDisplaySettings",hidden).Invoke(app,new object[] { null,EventArgs.Empty }); Application.DoEvents();
+                Check(app.RecoveryPending, "display notification uses the same coalesced recovery path");
+                app.ExitThread();
             }
         }
         private static void ContrastTests()

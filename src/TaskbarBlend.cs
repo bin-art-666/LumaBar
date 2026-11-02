@@ -68,16 +68,26 @@ namespace LumaBar
         private IntPtr foreground;
         private Rectangle foregroundFrame;
         internal bool Active { get { return windows.Count != 0; } }
-        internal TaskbarBlend()
-        { timer = new Timer { Interval = 15 }; timer.Tick += delegate { Advance(); }; }
+        private readonly Func<IntPtr> readForeground;
+        private readonly Func<IntPtr,Rectangle> readFrame;
+        internal TaskbarBlend(Func<IntPtr> readForeground = null, Func<IntPtr,Rectangle> readFrame = null)
+        {
+            this.readForeground = readForeground ?? Native.GetForegroundWindow;
+            this.readFrame = readFrame ?? Native.FrameOf;
+            timer = new Timer { Interval = 15 }; timer.Tick += delegate { Advance(); };
+        }
         internal static double OpacityAt(double progress)
         { double t = Math.Max(0, Math.Min(1, progress)); return 1 - t * t * (3 - 2 * t); }
-        internal void Begin()
+        private int duration = Duration;
+        internal void Begin() { Begin(Duration); }
+        internal void Begin(int milliseconds)
         {
             // Finish an interrupted blend rather than capture our own layered windows.
             Cancel();
-            foreground = Native.GetForegroundWindow();
-            foregroundFrame = Native.FrameOf(foreground);
+            if (milliseconds <= 0) return;
+            duration = milliseconds;
+            foreground = readForeground();
+            foregroundFrame = readFrame(foreground);
             try
             {
                 foreach (IntPtr taskbar in TaskbarGeometry.Windows())
@@ -111,14 +121,14 @@ namespace LumaBar
         {
             if (!Active) { timer.Stop(); return; }
             // A new app, menu or desktop interaction must never retain a stale image.
-            if (Native.GetForegroundWindow() != foreground || Native.FrameOf(foreground) != foregroundFrame) { Cancel(); return; }
+            if (readForeground() != foreground || readFrame(foreground) != foregroundFrame) { Cancel(); return; }
             long now = clock.ElapsedMilliseconds;
             if (fadeAt < 0)
             {
                 if ((ready == null || !ready()) && now < 500) return;
                 fadeAt = now;
             }
-            double t = (now - fadeAt) / (double)Duration;
+            double t = (now - fadeAt) / (double)duration;
             if (t >= 1) { Cancel(); return; }
             double opacity = OpacityAt(t);
             try { foreach (TaskbarBlendWindow window in windows) window.SetBlendOpacity(opacity); }

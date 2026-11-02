@@ -112,6 +112,11 @@ namespace LumaBar
                     }
             };
             loading = true; scene.SelectedIndex = 0; loading = false; LoadScene();
+            AccessibleName = "任务栏外观设置";
+            display.AccessibleName = "显示器"; scene.AccessibleName = "应用场景";
+            preset.AccessibleName = "外观预设"; material.AccessibleName = "任务栏材质";
+            opacity.AccessibleName = "染色不透明度"; blur.AccessibleName = "模糊强度";
+            Ui.OrderTabStops(this);
             Font = Ui.BodyFont; BackColor = Ui.Surface; ForeColor = Ui.Text; Ui.Apply(this);
         }
         private bool OverrideEnabled

@@ -35,6 +35,9 @@ namespace LumaBar
             accept.Click+=delegate{Color parsed;if(!TryParse(hex.Text,out parsed)){error.Text="请输入 6 位颜色值，例如 #202630。";error.ForeColor=Color.Firebrick;hex.Focus();return;}SetColor(parsed);DialogResult=DialogResult.OK;Close();};
             Controls.Add(cancel);Controls.Add(accept);AcceptButton=accept;CancelButton=cancel;
             hex.TextChanged+=delegate{if(!loading){Color parsed;if(TryParse(hex.Text,out parsed))SetColor(parsed);}};
+            hex.AccessibleName="颜色值";
+            for(int index=0;index<3;index++) channels[index].AccessibleName=labels[index];
+            Ui.OrderTabStops(this);
             Ui.Apply(this);SetColor(initial);AutoScaleDimensions=new SizeF(96,96);AutoScaleMode=AutoScaleMode.Dpi;
         }
         private static bool TryParse(string value,out Color color)

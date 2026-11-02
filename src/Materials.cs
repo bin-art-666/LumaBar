@@ -78,11 +78,11 @@ namespace LumaBar
         internal static List<IntPtr> Windows()
         {
             List<IntPtr> result = new List<IntPtr>();
-            Native.EnumWindows(delegate(IntPtr window, IntPtr unused) {
-                string cls = Native.ClassOf(window);
-                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") result.Add(window);
-                return true;
-            }, IntPtr.Zero);
+            foreach (string cls in new string[] { "Shell_TrayWnd", "Shell_SecondaryTrayWnd" })
+            {
+                IntPtr previous = IntPtr.Zero;
+                while ((previous = Native.FindWindowEx(IntPtr.Zero, previous, cls, null)) != IntPtr.Zero) result.Add(previous);
+            }
             return result;
         }
         internal static Rectangle SampleArea(Rectangle monitor)

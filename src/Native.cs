@@ -12,6 +12,9 @@ namespace LumaBar
         [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; public Point(int x, int y) { X = x; Y = y; } }
         [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int Left, Top, Right, Bottom; }
         [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
+        [DllImport("user32.dll")] internal static extern bool AllowSetForegroundWindow(uint processId);
         [DllImport("user32.dll")] internal static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll")] internal static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
         [DllImport("user32.dll")] internal static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
@@ -75,7 +78,7 @@ namespace LumaBar
         {
             internal readonly List<ThemeTarget> Targets = new List<ThemeTarget>();
             internal int Taskbars, Delivered, Failed, Generation;
-            internal long SynchronousMilliseconds;
+            internal long SynchronousMilliseconds, DiscoveryMilliseconds, NotifyMilliseconds, MaterialMilliseconds;
         }
         private static readonly object refreshGate = new object();
         private static readonly System.Threading.ManualResetEvent refreshIdle = new System.Threading.ManualResetEvent(true);
@@ -89,7 +92,32 @@ namespace LumaBar
         internal static void RefreshTaskbars(Action afterTaskbars)
         {
             Stopwatch foreground = Stopwatch.StartNew();
-            List<IntPtr> taskbars = new List<IntPtr>();
+            List<IntPtr> taskbars = TaskbarGeometry.Windows();
+            long discoveryMilliseconds = foreground.ElapsedMilliseconds;
+            ThemeBatch batch = new ThemeBatch { Taskbars = taskbars.Count };
+            foreach (IntPtr hwnd in taskbars)
+            {
+                if (foreground.ElapsedMilliseconds >= 120) { batch.Targets.Add(new ThemeTarget(hwnd, true)); continue; }
+                if (NotifyThemeWindow(hwnd, true, (uint)Math.Max(1, Math.Min(60, (120 - foreground.ElapsedMilliseconds) / 2)))) batch.Delivered++; else batch.Failed++;
+            }
+            // Submit the matching material before notifying unrelated top-level windows.
+            long notifyMilliseconds = foreground.ElapsedMilliseconds - discoveryMilliseconds;
+            if (afterTaskbars != null) afterTaskbars();
+            batch.DiscoveryMilliseconds = discoveryMilliseconds;
+            batch.NotifyMilliseconds = notifyMilliseconds;
+            batch.MaterialMilliseconds = foreground.ElapsedMilliseconds - discoveryMilliseconds - notifyMilliseconds;
+            batch.SynchronousMilliseconds = foreground.ElapsedMilliseconds;
+            lock (refreshGate)
+            {
+                batch.Generation = ++refreshGeneration;
+                pendingRefresh = batch;
+                if (refreshRunning) return;
+                refreshRunning = true; refreshIdle.Reset();
+                System.Threading.ThreadPool.QueueUserWorkItem(delegate { DrainRefreshes(); });
+            }
+        }
+        private static List<ThemeTarget> BackgroundThemeTargets()
+        {
             List<ThemeTarget> shell = new List<ThemeTarget>();
             List<ThemeTarget> others = new List<ThemeTarget>();
             HashSet<uint> shellHosts = new HashSet<uint>();
@@ -101,7 +129,7 @@ namespace LumaBar
             EnumWindows(delegate(IntPtr hwnd, IntPtr unused)
             {
                 string cls = ClassOf(hwnd);
-                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") taskbars.Add(hwnd);
+                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") return true;
                 else
                 {
                     uint pid; GetWindowThreadProcessId(hwnd, out pid);
@@ -111,24 +139,8 @@ namespace LumaBar
                 }
                 return true;
             }, IntPtr.Zero);
-            ThemeBatch batch = new ThemeBatch { Taskbars = taskbars.Count };
-            foreach (IntPtr hwnd in taskbars)
-            {
-                if (foreground.ElapsedMilliseconds >= 250) { batch.Targets.Add(new ThemeTarget(hwnd, true)); continue; }
-                if (NotifyThemeWindow(hwnd, true, 100)) batch.Delivered++; else batch.Failed++;
-            }
-            // Submit the matching material before notifying unrelated top-level windows.
-            if (afterTaskbars != null) afterTaskbars();
-            batch.Targets.AddRange(shell); batch.Targets.AddRange(others);
-            batch.SynchronousMilliseconds = foreground.ElapsedMilliseconds;
-            lock (refreshGate)
-            {
-                batch.Generation = ++refreshGeneration;
-                pendingRefresh = batch;
-                if (refreshRunning) return;
-                refreshRunning = true; refreshIdle.Reset();
-                System.Threading.ThreadPool.QueueUserWorkItem(delegate { DrainRefreshes(); });
-            }
+            shell.AddRange(others);
+            return shell;
         }
         private static void DrainRefreshes()
         {
@@ -143,14 +155,15 @@ namespace LumaBar
                 Stopwatch budget = Stopwatch.StartNew();
                 try
                 {
+                    batch.Targets.AddRange(BackgroundThemeTargets());
                     foreach (ThemeTarget target in batch.Targets)
                     {
                         lock (refreshGate) { if (batch.Generation != refreshGeneration) break; }
                         if (budget.ElapsedMilliseconds >= 1200) break;
                         if (NotifyThemeWindow(target.Window, target.Shell, target.Shell ? 30U : 20U)) batch.Delivered++; else batch.Failed++;
                     }
-                    Files.Log(String.Format("Theme refresh: taskbars={0}, synchronous_ms={1}, delivered={2}, failed={3}, background_ms={4}. Delivery is not visual confirmation.",
-                        batch.Taskbars, batch.SynchronousMilliseconds, batch.Delivered, batch.Failed, budget.ElapsedMilliseconds));
+                    Files.Log(String.Format("Theme refresh: taskbars={0}, synchronous_ms={1}, delivered={2}, failed={3}, background_ms={4}, discovery_ms={5}, taskbar_ms={6}, material_submit_ms={7}. Delivery is not visual confirmation.",
+                        batch.Taskbars, batch.SynchronousMilliseconds, batch.Delivered, batch.Failed, budget.ElapsedMilliseconds, batch.DiscoveryMilliseconds, batch.NotifyMilliseconds, batch.MaterialMilliseconds));
                 }
                 catch (Exception error) { Files.Log("Background theme notification: " + error); }
             }

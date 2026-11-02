@@ -322,12 +322,14 @@ namespace LumaBar
                     Check(Native.GetForegroundWindow() == foreground, "completed fade preserves the original active window");
                 }
                 Check(Native.GetForegroundWindow() == foreground, "disposing transition overlay preserves focus");
-                using (TaskbarBlend blend = new TaskbarBlend())
+                // Track this real test window explicitly: Windows may deny focus to a
+                // command-launched test. Production always resolves the true foreground.
+                using (TaskbarBlend blend = new TaskbarBlend(delegate { return background.Handle; }, Native.FrameOf))
                 {
                     blend.Begin();
                     Check(!blend.Active || Native.GetForegroundWindow() == foreground, "taskbar capture and passive display keep foreground focus");
                     background.Left += 20; Pump();
-                    Check(!blend.Active, "new foreground geometry cancels a stale taskbar image");
+                    Check(!blend.Active, "moving the tracked native window cancels a stale taskbar image");
                     blend.Begin();
                     System.Diagnostics.Stopwatch timeout = System.Diagnostics.Stopwatch.StartNew();
                     while (blend.Active && timeout.ElapsedMilliseconds < 1500) { Application.DoEvents(); Thread.Sleep(5); }
@@ -472,7 +474,7 @@ namespace LumaBar
             {
                 TabControl tabs = (TabControl)window.Controls[0];
                 ComboBox pace = null; DataGridView grid = null;
-                foreach (Control control in tabs.TabPages[0].Controls) if (control is ComboBox) pace = (ComboBox)control;
+                foreach (Control control in tabs.TabPages[0].Controls) if (control.Name == "Pace") pace = (ComboBox)control;
                 foreach (Control control in tabs.TabPages[1].Controls) if (control is DataGridView) grid = (DataGridView)control;
                 Check(pace.SelectedItem.ToString() == "均衡", "settings recognizes current timing preset");
                 pace.SelectedItem = "灵敏";
