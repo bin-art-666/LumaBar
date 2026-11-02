@@ -306,6 +306,10 @@ namespace LumaBar
             using (StatusWindow home = new StatusWindow { AllowClose = true })
             using (PreferencesWindow preferences = new PreferencesWindow(settings,null,delegate { return true; }))
             {
+                Label dynamicLabel = null;
+                foreach(Control child in home.Controls) if(child is Label && child.Text == "切换到其他应用后开始检测") dynamicLabel = (Label)child;
+                home.UpdateStatus("恢复后正在确认场景",null,Tone.Dark);
+                Check(dynamicLabel != null && dynamicLabel.AccessibilityObject.Name == "恢复后正在确认场景", "screen-reader status follows updated visible text after tab ordering");
                 Check(home.BackColor == preferences.BackColor && home.ForeColor == preferences.ForeColor, "home and settings use one application palette");
                 Check(Ui.Chrome(home) == 0 && Ui.Chrome(preferences) == 0, "Windows accepts unified rounded caption, color and border attributes before display");
                 Check(home.Icon != null && preferences.Icon != null && Ui.AppIcon.ToBitmap().Width == 32, "branded application icon loads from embedded resources");

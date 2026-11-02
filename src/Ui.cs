@@ -59,7 +59,6 @@ namespace LumaBar
             for (int i = 0; i < ordered.Count; i++)
             {
                 Control child = ordered[i]; child.TabIndex = i;
-                if (String.IsNullOrEmpty(child.AccessibleName) && !String.IsNullOrEmpty(child.Text)) child.AccessibleName = child.Text;
             }
         }
         internal static void Apply(Control root)
