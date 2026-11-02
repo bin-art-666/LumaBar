@@ -106,6 +106,7 @@ namespace LumaBar
                     Console.WriteLine("Rendered settings window.");
                     return 0;
                 }
+                if (args.Length == 1 && args[0] == "--update-worker") { UpdateWorkerTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--native") { NativeTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--refresh-speed") { RefreshSpeedTest(); return 0; }
                 if (args.Length == 1 && args[0] == "--readability") { ReadabilityNativeTest(); return 0; }
@@ -169,6 +170,7 @@ namespace LumaBar
                 MaterialTests();
                 ClassicThemeTests();
                 StabilityTests();
+                EfficiencyTests(); UpdateTests();
                 Console.WriteLine(passed + " checks passed. No real system settings were modified.");
                 return 0;
             }

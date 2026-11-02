@@ -130,6 +130,7 @@ namespace LumaBar
         private bool candidateFast;
         private readonly List<double> history = new List<double>();
 
+        internal bool HasPendingDecision { get { return candidate.HasValue; } }
         public DecisionEngine(Settings settings) { this.settings = settings; }
         public void Reset() { candidate = null; history.Clear(); observedWindow = 0; lastObservation = -100000; }
 

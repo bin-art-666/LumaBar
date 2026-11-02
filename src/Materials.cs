@@ -224,6 +224,7 @@ namespace LumaBar
         private int generation;
         private string lastKey;
         private long nextApply;
+        private uint lastRequestPid;
         private readonly Stopwatch clock = Stopwatch.StartNew();
         private volatile MaterialSnapshot snapshot = new MaterialSnapshot(MaterialState.Waiting, "等待有效场景，尚未应用材质");
         internal MaterialSnapshot Snapshot { get { return snapshot; } }
@@ -258,7 +259,10 @@ namespace LumaBar
         {
             if (disposed) return 0;
             string key = plan.Key;
-            if (!force && key == lastKey && clock.ElapsedMilliseconds < nextApply) return lastQueuedSequence;
+            uint explorer = backend.ExplorerPid;
+            if (!force && key == lastKey && explorer == lastRequestPid &&
+                (clock.ElapsedMilliseconds < nextApply || snapshot.State != MaterialState.Waiting)) return lastQueuedSequence;
+            lastRequestPid = explorer;
             lastKey = key; nextApply = clock.ElapsedMilliseconds + 2000;
             lock (gate)
             {
