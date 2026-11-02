@@ -2,7 +2,7 @@
 
 根据最大化窗口或桌面壁纸的明暗，自动切换 Windows 11 任务栏、开始菜单和快捷设置，并为任务栏叠加可调的透明、模糊和亚克力材质。
 
-**[下载 0.6 预览版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.6.0)** · [0.4 稳定版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.4.0) · [验证记录](VALIDATION.md) · [GPL-3.0 许可证](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
+**[下载 0.6.7 预览版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.6.7)** · [0.4 稳定版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.4.0) · [验证记录](VALIDATION.md) · [GPL-3.0 许可证](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
 
 ![LumaBar 主界面](docs/screenshots/main.png)
 
@@ -75,7 +75,7 @@
 - 玻璃材质、染色不透明度、模糊、对比度保护、多屏外观及预览配置保持原样。任务栏区域壁纸选项用于玻璃染色取样；系统明暗使用 0.4 整屏壁纸策略。
 - 本机统一运行目录为 `D:\APP\LumaBar`，仅保留当前程序及一个注册表自启入口。开发源码历史保留在 GitHub；本机开发副本已清理。
 
-GitHub `main` 包含本次修改；下方 v0.6.0 / v0.4.0 下载链接为历史发布，不包含 0.6.7。构建当前源码请运行 `build.ps1`，打包请运行 `package.ps1`；输出包以 0.6.7 命名。下面的 0.5.1 响应提速说明属于历史版本。
+GitHub `main` 与顶部 v0.6.7 下载入口包含当前修改；下方 v0.6.0 / v0.4.0 链接为历史发布。构建当前源码请运行 `build.ps1`，打包请运行 `package.ps1`；输出包以 0.6.7 命名。下面的 0.5.1 响应提速说明属于历史版本。
 
 ## 0.6：可读性与稳定性
 
