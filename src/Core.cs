@@ -12,6 +12,9 @@ namespace LumaBar
         public GlassSettings Glass = new GlassSettings();
         // Animation choice is independent from detection dwell/cooldown and glass.
         public string Transition = "standard";
+        public bool MouseGlow = true;
+        public int MouseGlowRadius = 100;
+        public int MouseGlowStrength = 25;
         [System.Web.Script.Serialization.ScriptIgnore]
         public int TransitionMilliseconds { get { return Transition == "off" ? 0 : Transition == "soft" ? 280 : 180; } }
         public int TimingVersion;
@@ -30,6 +33,8 @@ namespace LumaBar
 
         public void Validate()
         {
+            if (MouseGlowRadius < 5 || MouseGlowRadius > 200 || MouseGlowStrength < 0 || MouseGlowStrength > 100)
+                throw new ArgumentException("鼠标光效半径应为 5–200%，强度应为 0–100%。");
             if (Transition != "standard" && Transition != "soft" && Transition != "off")
                 throw new ArgumentException("Transition 应为 standard/soft/off。");
             RestoreClassicTiming();

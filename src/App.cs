@@ -4,16 +4,18 @@ using System.Drawing;
 using System.IO;
 using System.Security.Principal;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("0.6.7.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.6.7.0")]
+[assembly: System.Reflection.AssemblyVersion(LumaBar.Program.BuildVersion)]
+[assembly: System.Reflection.AssemblyFileVersion(LumaBar.Program.BuildVersion)]
 
 namespace LumaBar
 {
     internal static class Program
     {
+        internal const string BuildVersion = "0.6.14.0";
         internal static string ActivationName { get { return @"Local\LumaBar-Activate-" + WindowsIdentity.GetCurrent().User.Value; } }
         internal static bool RequestActivation(string eventName = null)
         {
@@ -98,8 +100,11 @@ namespace LumaBar
         private readonly SamplingCadence cadence = new SamplingCadence();
         private readonly ForegroundActivity activity;
         private readonly TaskbarBlend blend = new TaskbarBlend();
+        private readonly TaskbarGlow glow;
         private string visualKey;
         private GlassSettings previewGlass;
+        private bool? previewGlowEnabled;
+        private int previewGlowRadius, previewGlowStrength;
         private readonly ThemeController controller;
         private DecisionEngine engine;
         private readonly NotifyIcon tray;
@@ -121,7 +126,12 @@ namespace LumaBar
         private bool paused;
         private bool sessionLocked;
         private bool suspended;
+        private bool restoring;
+        private bool exitRequested;
         private bool exiting;
+        private Exception restoreFailure;
+        private string pendingMode;
+        private string pauseStatus;
         private string mode = "自动适应";
         private string lastApplication;
         private long lastApplicationAt = -100000;
@@ -147,45 +157,43 @@ namespace LumaBar
             window.SettingsRequested += ShowSettings;
             window.RetryRequested += RetryMaterials;
             ContextMenuStrip menu = Ui.Menu();
-            menu.Items.Add("打开 LumaBar", Ui.AppIcon.ToBitmap(), delegate { ShowWindow(); });
-            menu.Items.Add("设置…", Ui.Glyph("\uE713"), delegate { ShowSettings(); });
-            menu.Items.Add("从更新包更新…", Ui.Glyph("\uE72C"), delegate {
+            menu.Items.Add("打开 LumaBar", null, delegate { ShowWindow(); });
+            menu.Items.Add("设置…", null, delegate { ShowSettings(); });
+            pauseItem = new ToolStripMenuItem("暂停并恢复原主题", null, delegate { TogglePause(); });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(pauseItem);
+            menu.Items.Add("重新同步任务栏", null, delegate { Resync(); });
+            menu.Items.Add("重试玻璃效果", null, delegate { RetryMaterials(); });
+            ToolStripMenuItem rules = new ToolStripMenuItem("应用纠正");
+            rules.DropDownItems.Add("读取目标应用…");
+            rules.DropDownOpening += delegate { PopulateRules(rules.DropDownItems); };
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(rules);
+            ToolStripMenuItem pace = new ToolStripMenuItem("切换节奏") { Name = "TrayPace" };
+            pace.DropDownItems.Add("读取切换节奏…");
+            pace.DropDownOpening += delegate { PopulatePace(pace.DropDownItems); };
+            menu.Items.Add(pace);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("打开设置文件", null, delegate
+            {
+                try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "settings.json") + "\""); }
+                catch (Exception error) { Report(error); }
+            });
+            menu.Items.Add("从更新包更新…", null, delegate {
                 ShowWindow();
                 using (OpenFileDialog picker = new OpenFileDialog { Filter = "LumaBar 更新包 (*.zip)|*.zip", Title = "选择 LumaBar 更新包" })
                     if (picker.ShowDialog(window) == DialogResult.OK)
                         try { UpdateLauncher.Start(Files.Root,picker.FileName); window.UpdateStatus("更新包已验证，正在准备更新…",null,controller.Current.Tone); }
                         catch (Exception error) { Report(error); }
             });
-            pauseItem = new ToolStripMenuItem("暂停并恢复原主题", null, delegate { TogglePause(); });
-            pauseItem.Image = Ui.Glyph("\uE769");
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(pauseItem);
-            menu.Items.Add("重新同步任务栏", Ui.Glyph("\uE72C"), delegate { Resync(); });
-            menu.Items.Add("重试玻璃效果", Ui.Glyph("\uE790"), delegate { RetryMaterials(); });
-            ToolStripMenuItem rules = new ToolStripMenuItem("应用纠正");
-            rules.DropDownItems.Add("读取目标应用…");
-            rules.DropDownOpening += delegate { PopulateRules(rules.DropDownItems); };
-            rules.Image = Ui.Glyph("\uE8A5");
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(rules);
-            ToolStripMenuItem pace = new ToolStripMenuItem("切换节奏");
-            pace.DropDownItems.Add("读取切换节奏…");
-            pace.DropDownOpening += delegate { PopulatePace(pace.DropDownItems); };
-            pace.Image = Ui.Glyph("\uE916");
-            menu.Items.Add(pace);
-            menu.Items.Add("打开设置文件", Ui.Glyph("\uE8A5"), delegate
-            {
-                try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "settings.json") + "\""); }
-                catch (Exception error) { Report(error); }
-            });
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("退出并恢复", Ui.Glyph("\uE8BB"), delegate { ExitThread(); });
+            menu.Items.Add("退出并恢复", null, delegate { ExitThread(); });
             tray = new NotifyIcon { Icon = Ui.AppIcon, Text = "LumaBar · 自动适应", Visible = true, ContextMenuStrip = menu };
             tray.DoubleClick += delegate { ShowWindow(); };
             timer = new System.Windows.Forms.Timer { Interval = settings.PollMilliseconds };
             timer.Tick += delegate {
                 Tick();
-                if (startupHealth != null && !paused && ++successfulStartupTicks >= 2)
+                if (startupHealth != null && !paused && !restoring && !exiting && ++successfulStartupTicks >= 2)
                 { startupHealth.Set(); startupHealth.Dispose(); startupHealth = null; }
                 if (clock.ElapsedMilliseconds >= nextUpdateNotice)
                 {
@@ -195,6 +203,7 @@ namespace LumaBar
                 }
             };
             activity = new ForegroundActivity(WakeSampling);
+            glow = new TaskbarGlow(delegate { return (previewGlowEnabled ?? this.settings.MouseGlow) && mode != "仅检测（不修改）" && !paused && !sessionLocked && !suspended && !restoring && !exiting && recoveryAt < 0 && !blend.Active; }, delegate { return controller.Current.Tone == Tone.Light; }, radius: delegate { return previewGlowEnabled.HasValue ? previewGlowRadius : this.settings.MouseGlowRadius; }, strength: delegate { return previewGlowEnabled.HasValue ? previewGlowStrength : this.settings.MouseGlowStrength; });
             activationWait = ThreadPool.RegisterWaitForSingleObject(activation, delegate { Dispatch(ShowWindow); }, null, Timeout.Infinite, false);
             shutdown = new EventWaitHandle(false,EventResetMode.AutoReset,ShutdownName(Process.GetCurrentProcess().Id));
             shutdownWait = ThreadPool.RegisterWaitForSingleObject(shutdown, delegate { Dispatch(delegate { ExitThread(); }); }, null, Timeout.Infinite, false);
@@ -214,7 +223,7 @@ namespace LumaBar
 
         private void WakeSampling()
         {
-            if (exiting) return;
+            if (restoring || exiting) return;
             cadence.Wake(clock.ElapsedMilliseconds);
             timer.Interval = Math.Min(40,settings.PollMilliseconds);
         }
@@ -226,6 +235,7 @@ namespace LumaBar
         private void ShowWindow() { WakeSampling(); window.Show(); window.WindowState = FormWindowState.Normal; window.Activate(); }
         private void Resync()
         {
+            if (restoring || exiting || restoreFailure != null) return;
             try { controller.Refresh(); ApplyMaterials(true); window.UpdateStatus("已重新发送主题与任务栏设置通知", null, controller.Current.Tone); }
             catch (Exception error) { Report(error); }
         }
@@ -237,7 +247,7 @@ namespace LumaBar
                 // live rules or timing without also persisting that choice.
                 Settings next = Files.Json.Deserialize<Settings>(Files.Json.Serialize(settings));
                 next.Validate(); change(next); next.Validate(); Files.SaveSettings(next);
-                settings = next; engine = new DecisionEngine(settings); visualTransition.Reset();
+                settings = next; if (!settings.MouseGlow || settings.MouseGlowStrength == 0) glow.Clear(); engine = new DecisionEngine(settings); visualTransition.Reset();
                 cadence.Wake(clock.ElapsedMilliseconds);
                 timer.Interval = settings.PollMilliseconds;
                 window.UpdateStatus("设置已保存，立即生效", null, controller.Current.Tone);
@@ -246,13 +256,13 @@ namespace LumaBar
             catch (Exception error) { Report(error); return false; }
         }
         private bool CanApplyAppearance
-        { get { return mode != "仅检测（不修改）" && !paused && !sessionLocked && !suspended && !SystemInformation.HighContrast && sceneCoordinator.Ready && !visualTransition.Waiting; } }
+        { get { return mode != "仅检测（不修改）" && !paused && !sessionLocked && !suspended && !restoring && !exiting && !SystemInformation.HighContrast && sceneCoordinator.Ready && !visualTransition.Waiting; } }
         private MaterialPlan PrepareAppearance(Tone tone)
         {
             GlassSettings glass = previewGlass ?? settings.Glass;
             MaterialPlan plan = ReadabilityPolicy.Capture(glass, materialScene, tone);
             string key = plan.Key;
-            if (visualKey != null && visualKey != key) blend.Begin(settings.TransitionMilliseconds);
+            if (visualKey != null && visualKey != key) { glow.Clear(); blend.Begin(settings.TransitionMilliseconds); }
             visualKey = key;
             return plan;
         }
@@ -269,21 +279,92 @@ namespace LumaBar
             }
             else blend.WhenReady(delegate { return true; });
         }
-        private void RestoreMaterials() { if (materials != null) materials.Restore(); }
         internal static void RestoreBoth(Action material, Action theme)
         {
+            Exception failure = null;
+            try { material(); } catch (Exception error) { failure = error; }
+            RestoreBoth(failure, theme);
+        }
+        private static void RestoreBoth(Exception materialFailure, Action theme)
+        {
             System.Collections.Generic.List<Exception> errors = new System.Collections.Generic.List<Exception>();
-            try { material(); } catch (Exception error) { errors.Add(error); }
+            if (materialFailure != null) errors.Add(materialFailure);
             try { theme(); } catch (Exception error) { errors.Add(error); }
             if (errors.Count > 0) throw new AggregateException("部分恢复未完成，请重试。", errors);
         }
-        private void RestoreManagedState() { blend.Cancel(); visualKey = null; RestoreBoth(RestoreMaterials, delegate { controller.Restore(); }); }
+        private void ClearManagedAppearance() { glow.Clear(); blend.Cancel(); visualKey = null; }
+        private void ResetDecisions() { engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset(); }
+        private void SetPaused(bool value)
+        {
+            paused = value;
+            bool retry = restoreFailure != null;
+            pauseItem.Text = retry ? "重试恢复" : value ? "恢复自动适应" : "暂停并恢复原主题";
+            window.SetPaused(value, retry);
+        }
+        private void ShowRestoreProgress()
+        {
+            window.UpdateStatusText(exitRequested ? "正在恢复任务栏与主题，完成后退出…" : "正在恢复任务栏与主题…");
+            UpdateMaterialStatus();
+        }
+        private void BeginRestore()
+        {
+            if (restoring || exiting) return;
+            restoring = true;
+            restoreFailure = null;
+            window.SetRestoring(true);
+            pauseItem.Enabled = false;
+            timer.Interval = 1000;
+            ClearManagedAppearance();
+            ResetDecisions();
+            ShowRestoreProgress();
+
+            if (materials == null) { CompleteRestore(null); return; }
+            materials.RestoreAsync().ContinueWith(task => Dispatch(delegate {
+                CompleteRestore(task.IsFaulted ? task.Exception.InnerException : null);
+            }), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        private void CompleteRestore(Exception materialFailure)
+        {
+            try
+            {
+                RestoreBoth(materialFailure, delegate { controller.Restore(); });
+            }
+            catch (Exception error) { restoreFailure = error; }
+
+            if (restoreFailure == null && exitRequested)
+            {
+                FinishExit();
+                return;
+            }
+
+            if (restoreFailure == null && pendingMode != null) mode = pendingMode;
+            pendingMode = null;
+            window.SelectMode(mode);
+            restoring = false;
+            window.SetRestoring(false);
+            pauseItem.Enabled = true;
+            SetPaused(paused || restoreFailure != null);
+            bool failedExit = exitRequested;
+            exitRequested = false;
+            if (restoreFailure != null)
+            {
+                Report(restoreFailure);
+                if (failedExit)
+                {
+                    ShowWindow();
+                    window.UpdateStatusText("恢复未完成 · 可重试恢复或重新选择退出");
+                }
+            }
+            else if (paused) window.UpdateStatus(pauseStatus ?? "已暂停 · 已恢复或保留原主题", null, controller.Current.Tone);
+            UpdateMaterialStatus();
+            WakeSampling();
+        }
         private void RetryMaterials()
         {
+            if (restoring || exiting) return;
             if (paused || sessionLocked || suspended || SystemInformation.HighContrast)
             {
-                try { RestoreManagedState(); } catch (Exception error) { Report(error); }
-                UpdateMaterialStatus(); return;
+                BeginRestore(); return;
             }
             if (materials != null) materials.Retry();
             ApplyMaterials(true);
@@ -300,6 +381,8 @@ namespace LumaBar
         }
         private void UpdateMaterialStatus()
         {
+            if (restoring) { window.UpdateMaterialStatus("正在恢复系统原生外观…", false, false); return; }
+            if (restoreFailure != null) { window.UpdateMaterialStatus("恢复未确认 · 请重试", true, true, "重试恢复"); return; }
             if (mode == "仅检测（不修改）") { window.UpdateMaterialStatus("仅检测 · 不修改材质", false, false); return; }
             if (materials == null) { window.UpdateMaterialStatus("尚未应用 / 系统原生", false); return; }
             MaterialSnapshot state = materials.Snapshot;
@@ -315,13 +398,18 @@ namespace LumaBar
         }
         private void ShowSettings()
         {
+            if (restoring || exiting) return;
             try
             {
                 using (PreferencesWindow preferences = new PreferencesWindow(settings, StartupRegistration.Read(), SavePreferences))
                 {
+                    preferences.GlowPreviewChanged += delegate(bool enabled, int radius, int strength) {
+                        previewGlowEnabled = enabled; previewGlowRadius = radius; previewGlowStrength = strength;
+                        if (!enabled || strength == 0) glow.Clear();
+                    };
                     preferences.AppearancePreview += delegate(GlassSettings glass) { previewGlass = glass; ApplyMaterials(true); };
                     try { preferences.ShowDialog(window); }
-                    finally { previewGlass = null; engine = new DecisionEngine(settings); visualTransition.Reset(); cadence.Wake(clock.ElapsedMilliseconds); ApplyMaterials(true); }
+                    finally { previewGlowEnabled = null; glow.Clear(); previewGlass = null; engine = new DecisionEngine(settings); visualTransition.Reset(); cadence.Wake(clock.ElapsedMilliseconds); ApplyMaterials(true); }
                 }
             }
             catch (Exception error) { Report(error); }
@@ -379,9 +467,9 @@ namespace LumaBar
             menu.Closed += delegate { menu.Dispose(); };
             menu.Show(Cursor.Position);
         }
-        private void Dispatch(Action action)
+        private void Dispatch(Action action, bool duringExit = false)
         {
-            if (!exiting && !window.IsDisposed)
+            if ((!exiting || duringExit) && !window.IsDisposed)
             {
                 try { window.BeginInvoke(action); }
                 catch (InvalidOperationException) { }
@@ -390,14 +478,14 @@ namespace LumaBar
         private void OnSessionSwitch(object sender, SessionSwitchEventArgs args)
         {
             if (args.Reason == SessionSwitchReason.SessionLock)
-                Dispatch(delegate { sessionLocked = true; ReleaseForIdle(); });
+                Dispatch(delegate { sessionLocked = true; BeginRestore(); });
             else if (args.Reason == SessionSwitchReason.SessionUnlock)
                 Dispatch(delegate { sessionLocked = false; ScheduleRecovery("Session unlocked"); });
         }
         private void OnPowerMode(object sender, PowerModeChangedEventArgs args)
         {
             if (args.Mode == PowerModes.Suspend)
-                Dispatch(delegate { suspended = true; ReleaseForIdle(); });
+                Dispatch(delegate { suspended = true; BeginRestore(); });
             else if (args.Mode == PowerModes.Resume)
                 Dispatch(delegate { suspended = false; ScheduleRecovery("System resumed"); });
         }
@@ -406,8 +494,8 @@ namespace LumaBar
         internal void ScheduleRecovery(string reason)
         {
             if (exiting) return;
-            blend.Cancel(); visualKey = null;
-            engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
+            ClearManagedAppearance();
+            ResetDecisions();
             cadence.Wake(clock.ElapsedMilliseconds);
             WallpaperSampler.Invalidate();
             if (materials != null) { materials.InvalidatePending(); materials.Retry(); }
@@ -422,64 +510,62 @@ namespace LumaBar
             // serialize restoration with timer/theme writes.
             if (!exiting && window.IsHandleCreated)
             {
-                try { window.Invoke(new Action(delegate { timer.Stop(); ReleaseForIdle(); })); }
+                try { window.Invoke(new Action(delegate {
+                    if (exiting) return;
+                    timer.Stop();
+                    ClearManagedAppearance();
+                    ResetDecisions();
+                    // The OS can terminate the message loop once this callback returns.
+                    try { RestoreBoth(delegate { if (materials != null) materials.Restore(); }, delegate { controller.Restore(); }); }
+                    catch (Exception error) { restoreFailure = error; SetPaused(true); Report(error); }
+                })); }
                 catch (InvalidOperationException) { }
             }
         }
-        private void ReleaseForIdle()
-        {
-            engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
-            try { RestoreManagedState(); }
-            catch (Exception error) { paused = true; Report(error); }
-        }
-
         private void TogglePause()
         {
-            try
+            if (restoring || exiting) return;
+            if (!paused || restoreFailure != null)
             {
-                bool resume = paused;
-                paused = !resume;
-                pauseItem.Text = paused ? "恢复自动适应" : "暂停并恢复原主题";
-                window.SetPaused(paused);
-                if (paused) RestoreManagedState();
-                engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
-                WakeSampling(); Tick();
+                if (!paused) pauseStatus = null;
+                SetPaused(true);
+                BeginRestore();
+                return;
             }
-            catch (Exception error) { Report(error); }
+            pauseStatus = null;
+            SetPaused(false);
+            ResetDecisions();
+            WakeSampling(); Tick();
         }
         private void ChangeMode(string next)
         {
-            try
-            {
-                RestoreManagedState();
-                engine.Reset(); sceneCoordinator.ResetPending(); visualTransition.Reset();
-                mode = next;
-                WakeSampling(); Tick();
-            }
-            catch (Exception error) { paused = true; Report(error); }
+            if (restoring || exiting || next == mode) return;
+            pendingMode = next;
+            BeginRestore();
         }
         private void Tick()
         {
-            if (exiting) return;
+            if (restoring || exiting) return;
             try
             {
                 if (paused || sessionLocked || suspended || SystemInformation.HighContrast)
                 {
-                    if (SystemInformation.HighContrast && !idleReleased) { ReleaseForIdle(); idleReleased = true; }
+                    if (SystemInformation.HighContrast && !idleReleased)
+                    { idleReleased = true; BeginRestore(); return; }
                     timer.Interval = 1000;
                     engine.Reset();
-                    window.UpdateStatus(paused ? "已暂停 · 已恢复或保留原主题" : "系统暂停 · 高对比度 / 锁屏 / 休眠", null, controller.Current.Tone);
+                    if (restoreFailure == null)
+                        window.UpdateStatus(paused ? pauseStatus ?? "已暂停 · 已恢复或保留原主题" : "系统暂停 · 高对比度 / 锁屏 / 休眠", null, controller.Current.Tone);
                     UpdateMaterialStatus();
                     return;
                 }
                 idleReleased = false;
                 if (!controller.OwnsCurrent())
                 {
-                    paused = true;
-                    RestoreManagedState(); // Leaves external theme changes in place.
-                    pauseItem.Text = "恢复自动适应";
-                    window.SetPaused(true);
-                    window.UpdateStatus("检测到外部主题更改，已暂停", null, controller.Current.Tone);
+                    SetPaused(true);
+                    pauseStatus = "检测到外部主题更改，已暂停";
+                    Files.Log("Paused after an external theme change.");
+                    BeginRestore(); // Leaves external theme changes in place.
                     return;
                 }
                 if (recoveryAt >= 0)
@@ -547,11 +633,10 @@ namespace LumaBar
             }
             catch (Exception error)
             {
-                paused = true;
-                pauseItem.Text = "恢复自动适应";
-                window.SetPaused(true);
-                try { RestoreManagedState(); } catch (Exception restoreError) { Files.Log(restoreError.ToString()); }
+                SetPaused(true);
+                pauseStatus = "已暂停 · " + error.Message;
                 Report(error);
+                BeginRestore();
             }
         }
         internal static MaterialScene SceneFor(WindowSample sample)
@@ -565,21 +650,27 @@ namespace LumaBar
         }
         protected override void ExitThreadCore()
         {
-            if (exiting) return;
-            timer.Stop();
-            try { RestoreManagedState(); }
-            catch (Exception error)
-            {
-                paused = true;
-                window.SetPaused(true);
-                pauseItem.Text = "恢复自动适应";
-                Report(error);
-                ShowWindow();
-                Ui.Message(window, "恢复失败，程序保持暂停。请检查日志后重试退出；恢复记录会保留。", "LumaBar");
-                return;
-            }
-            Native.WaitForThemeRefresh(1500);
+            if (exitRequested || exiting) return;
+            exitRequested = true;
+            if (restoring) ShowRestoreProgress();
+            else BeginRestore();
+        }
+        private void FinishExit()
+        {
             exiting = true;
+            timer.Stop();
+            Task stopped = materials == null ? null : materials.StopAfterRestore();
+            if ((stopped == null || stopped.IsCompleted) && Native.WaitForThemeRefresh(0)) { CloseTray(); return; }
+            WaitForExitCleanup(stopped).ContinueWith(task => Dispatch(CloseTray, true), CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        private static async Task WaitForExitCleanup(Task stopped)
+        {
+            if (stopped != null && !stopped.IsCompleted) await Task.WhenAny(stopped, Task.Delay(1000)).ConfigureAwait(false);
+            if (!Native.WaitForThemeRefresh(0)) await Task.Run(delegate { Native.WaitForThemeRefresh(1500); }).ConfigureAwait(false);
+        }
+        private void CloseTray()
+        {
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.SessionEnding -= OnSessionEnding;
             SystemEvents.PowerModeChanged -= OnPowerMode;
@@ -589,8 +680,7 @@ namespace LumaBar
             activationWait.Unregister(null); shutdownWait.Unregister(null);
             activation.Dispose(); shutdown.Dispose();
             if (startupHealth != null) { startupHealth.Dispose(); startupHealth = null; }
-            if (materials != null) materials.Dispose();
-            blend.Dispose();
+            glow.Dispose(); blend.Dispose();
             tray.Visible = false;
             tray.Dispose();
             timer.Dispose();
@@ -605,9 +695,12 @@ namespace LumaBar
     internal sealed class PreferencesWindow : Form
     {
         internal event Action<GlassSettings> AppearancePreview;
+        internal event Action<bool, int, int> GlowPreviewChanged;
         private readonly AppearanceEditor appearance;
         private readonly ComboBox pace;
         private readonly ComboBox transition;
+        private readonly CheckBox mouseGlow;
+        private readonly ModernSlider glowRadius, glowStrength;
         private readonly CheckBox startup;
         private readonly DataGridView rules;
         private readonly bool originalStartup;
@@ -620,32 +713,37 @@ namespace LumaBar
             SuspendLayout();
             Text = "LumaBar · 设置";
             Ui.Window(this);
-            Font = Ui.BodyFont;
-            ClientSize = new Size(660, 720);
+            ClientSize = new Size(806, 654);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
-            BackColor = Color.FromArgb(247, 249, 252);
-            TabControl tabs = new SettingsPages { Location = new Point(20, 118), Size = new Size(620, 538), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
-            TabPage general = new TabPage("常规") { BackColor = Color.White, AutoScroll = true };
-            TabPage applications = new TabPage("应用规则") { BackColor = Color.White, AutoScroll = true };
-            tabs.TabPages.Add(general); tabs.TabPages.Add(applications); Controls.Add(tabs);
-            TabPage visuals = new TabPage("任务栏外观") { BackColor = Color.White };
-            appearance = new AppearanceEditor(settings.Glass) { Dock = DockStyle.Fill };
-            appearance.PreviewRequested += delegate(GlassSettings glass) { if (AppearancePreview != null) AppearancePreview(glass); };
-            visuals.Controls.Add(appearance); tabs.TabPages.Add(visuals);
-            Label title = new Label { Text = "让任务栏与开始菜单自然适应明暗", Location = new Point(22, 20), Size = new Size(555, 32), Font = new Font(Font.FontFamily, 14, FontStyle.Bold) };
-            general.Controls.Add(title);
-            general.Controls.Add(new Label { Text = "最大化 / 全屏时跟随软件；普通窗口与桌面跟随壁纸。\n自动 / 固定浅色 / 固定深色可在主界面切换。", Location = new Point(24, 65), Size = new Size(550, 55) });
-            startup = new ModernCheckBox { Text = "登录 Windows 后自动启动（收起到托盘）", Checked = originalStartup, Location = new Point(24, 142), Size = new Size(550, 30) };
-            general.Controls.Add(startup);
+
+            TabControl tabs = new SettingsPages { Name = "SettingsPages", Location = new Point(153, 14), Size = new Size(637, 576),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right, TabStop = false };
+            string[] pageNames = { "常规", "应用规则", "任务栏外观" };
+            foreach (string name in pageNames)
+            {
+                TabPage page = new TabPage(name) { AutoScroll = true };
+                tabs.TabPages.Add(page);
+                AddLabel(page, name, 10, 8, 350, 32, heading: true);
+            }
+            Controls.Add(tabs);
+            TabPage general = tabs.TabPages[0], applications = tabs.TabPages[1], visuals = tabs.TabPages[2];
+
+            UiCard launch = AddCard(general, 47, 88);
+            startup = new ModernCheckBox { Text = "登录 Windows 后自动启动", AccessibleName = "登录 Windows 后自动启动并收起到托盘",
+                Checked = originalStartup, Location = new Point(16, 12), Size = new Size(565, 30) };
+            launch.Controls.Add(startup);
             string expected = StartupRegistration.Command(Application.ExecutablePath);
-            general.Controls.Add(new Label { Text = originalStartup && !String.Equals(expected, startupCommand, StringComparison.OrdinalIgnoreCase)
-                ? "已存在其他位置的 LumaBar 自启项。\n保存时将更新为当前程序；请先放到固定文件夹。"
-                : "建议先解压到固定文件夹。移动程序后需重新开启自启。\n若 Windows 禁用了此启动项，请在系统的“启动应用”中启用。",
-                Location = new Point(44, 179), Size = new Size(530, 65), ForeColor = Color.DimGray });
-            general.Controls.Add(new Label { Text = "切换速度", Location = new Point(24, 260), Size = new Size(160, 27) });
-            pace = new ModernComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(190, 257), Size = new Size(260, 30) };
+            AddLabel(launch, originalStartup && !String.Equals(expected, startupCommand, StringComparison.OrdinalIgnoreCase)
+                ? "检测到其他位置的自启项。保存时将改用当前程序，请先放到固定文件夹。"
+                : "启动后收起到托盘。若自启被禁用，请在 Windows 的“启动应用”中启用。",
+                16, 47, 570, 32, muted: true);
+
+            UiCard timing = AddCard(general, 147, 129);
+            AddLabel(timing, "切换速度", 16, 17, 238, 25);
+            pace = new ModernComboBox { Name = "Pace", AccessibleName = "明暗判断速度", DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(320, 12), Size = new Size(274, 32) };
             pace.Items.AddRange(new object[] { "灵敏", "均衡", "舒缓", "自定义（保留当前参数）" });
             pace.SelectedIndex = 3;
             for (int i = 0; i < 3; i++)
@@ -655,23 +753,60 @@ namespace LumaBar
                     settings.ContentStableMilliseconds == preset.ContentStableMilliseconds && settings.MinimumSwitchMilliseconds == preset.MinimumSwitchMilliseconds &&
                     settings.SourceStableMilliseconds == preset.SourceStableMilliseconds && settings.SourceMinimumSwitchMilliseconds == preset.SourceMinimumSwitchMilliseconds) pace.SelectedIndex = i;
             }
-            pace.Name = "Pace"; pace.AccessibleName = "明暗判断速度";
-            general.Controls.Add(pace);
-            general.Controls.Add(new Label { Text = "灵敏：响应更快　·　均衡：推荐　·　舒缓：减少切换\n速度调整同时作用于最大化、还原和窗口内容变化。", Location = new Point(24, 305), Size = new Size(550, 62), ForeColor = Color.DimGray });
-            general.Controls.Add(new Label { Text = "过渡动画", Location = new Point(24, 382), Size = new Size(160, 27) });
-            transition = new ModernComboBox { Name = "Transition", AccessibleName = "过渡动画", DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(190, 379), Size = new Size(260, 30) };
+            timing.Controls.Add(pace);
+            AddLabel(timing, "控制窗口切换与内容变化后的确认速度。", 16, 48, 562, 24, muted: true);
+            AddLabel(timing, "过渡动画", 16, 75, 238, 25);
+            transition = new ModernComboBox { Name = "Transition", AccessibleName = "过渡动画", DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(320, 70), Size = new Size(274, 32) };
             transition.Items.AddRange(new object[] { "标准（当前效果）", "柔和", "关闭" });
             transition.SelectedIndex = settings.Transition == "soft" ? 1 : settings.Transition == "off" ? 2 : 0;
-            general.Controls.Add(transition);
-            general.Controls.Add(new Label { Text = "只调整过渡动画，不影响明暗判断速度与玻璃参数。", Location = new Point(24, 425), Size = new Size(550, 36), ForeColor = Color.DimGray });
-            LinkLabel license = new LinkLabel { Text = "关于与开源许可（含 TranslucentTB）", Location = new Point(24, 475), Size = new Size(550, 28) };
+            timing.Controls.Add(transition);
+            AddLabel(timing, "只改变外观过渡，明暗判断速度和玻璃参数独立设置。", 16, 101, 562, 24, muted: true);
+
+            UiCard glowCard = AddCard(general, 288, 228);
+            mouseGlow = new ModernCheckBox { Name = "MouseGlow", AccessibleName = "任务栏鼠标光效", Text = "任务栏鼠标光效",
+                Checked = settings.MouseGlow, Location = new Point(16, 8), Size = new Size(565, 30) };
+            glowCard.Controls.Add(mouseGlow);
+            AddLabel(glowCard, "光晕跟随任务栏上的指针，移开后淡出。", 16, 39, 570, 24, muted: true);
+            AddLabel(glowCard, "光晕半径", 16, 70, 116, 27);
+            glowRadius = new ModernSlider { Name = "MouseGlowRadius", AccessibleName = "光晕半径（百分比）", Minimum = 5, Maximum = 200,
+                SmallChange = 1, LargeChange = 10, Value = settings.MouseGlowRadius, Location = new Point(126, 65), Size = new Size(400, 34) };
+            Label radiusValue = new Label { Name = "MouseGlowRadiusValue", Location = new Point(530, 70), Size = new Size(64, 26), TextAlign = ContentAlignment.MiddleRight };
+            glowCard.Controls.Add(glowRadius); glowCard.Controls.Add(radiusValue);
+            AddLabel(glowCard, "光效强度", 16, 109, 116, 27);
+            glowStrength = new ModernSlider { Name = "MouseGlowStrength", AccessibleName = "光效强度（百分比）", Minimum = 0, Maximum = 100,
+                SmallChange = 1, LargeChange = 10, Value = settings.MouseGlowStrength, Location = new Point(126, 104), Size = new Size(400, 34) };
+            Label strengthValue = new Label { Name = "MouseGlowStrengthValue", Location = new Point(530, 109), Size = new Size(64, 26), TextAlign = ContentAlignment.MiddleRight };
+            glowCard.Controls.Add(glowStrength); glowCard.Controls.Add(strengthValue);
+            AddLabel(glowCard, "拖动滑块实时预览。强度设为 0% 时关闭光效。", 16, 142, 570, 24, muted: true);
+            GlowPreview glowPreview = new GlowPreview { Name = "MouseGlowPreview", Location = new Point(16, 168), Size = new Size(578, 48) };
+            glowCard.Controls.Add(glowPreview);
+            ModernButton resetGlow = new ModernButton { Name = "ResetMouseGlow", Text = "恢复光效默认值", Location = new Point(10, 528), Size = new Size(155, 32) };
+            resetGlow.Click += delegate { glowRadius.Value = 100; glowStrength.Value = 25; };
+            general.Controls.Add(resetGlow);
+
+            Action updateGlow = delegate {
+                glowRadius.Enabled = glowStrength.Enabled = mouseGlow.Checked;
+                radiusValue.Text = glowRadius.Value + "%"; strengthValue.Text = glowStrength.Value + "%";
+                glowRadius.AccessibleDescription = "当前半径 " + radiusValue.Text;
+                glowStrength.AccessibleDescription = "当前强度 " + strengthValue.Text;
+                glowPreview.UpdateEffect(glowRadius.Value, glowStrength.Value, mouseGlow.Checked && glowStrength.Value > 0);
+                if (GlowPreviewChanged != null) GlowPreviewChanged(mouseGlow.Checked, glowRadius.Value, glowStrength.Value);
+            };
+            glowRadius.ValueChanged += delegate { updateGlow(); };
+            glowStrength.ValueChanged += delegate { updateGlow(); };
+            mouseGlow.CheckedChanged += delegate { updateGlow(); };
+            updateGlow();
+            LinkLabel license = new LinkLabel { Text = "关于与开源许可（含 TranslucentTB）", Location = new Point(184, 535), Size = new Size(410, 24) };
             license.LinkClicked += delegate { try { Process.Start("notepad.exe", "\"" + Path.Combine(Files.Root, "THIRD_PARTY_NOTICES.md") + "\""); } catch (Exception error) { Ui.Message(this, error.Message, "LumaBar"); } };
             general.Controls.Add(license);
-            applications.Controls.Add(new Label { Text = "填写进程名（如 Code.exe、WeChat.exe）。规则仅在最大化 / 全屏时生效。\n普通窗口仍跟随壁纸；删除规则后恢复自动识别。", Location = new Point(16, 14), Size = new Size(580, 52) });
-            rules = new DataGridView { Location = new Point(16, 78), Size = new Size(576, 265), BackgroundColor = Color.White,
+
+            AddLabel(applications, "在空白行填写进程名（如 Code.exe、WeChat.exe）。规则仅在最大化或全屏时生效。\n删除该规则后，应用恢复自动识别。",
+                10, 43, 607, 52, muted: true);
+            UiCard ruleCard = AddCard(applications, 102, 394);
+            rules = new DataGridView { Name = "ApplicationRules", AccessibleName = "应用规则列表", Location = new Point(12, 12), Size = new Size(588, 320),
                 AutoGenerateColumns = false, AllowUserToAddRows = true, AllowUserToDeleteRows = true,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false, RowHeadersWidth = 32 };
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false };
             rules.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             rules.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCells;
             rules.Columns.Add(new DataGridViewTextBoxColumn { Name = "Process", HeaderText = "进程名", FillWeight = 55 });
@@ -680,45 +815,84 @@ namespace LumaBar
                     new RuleChoice("auto", "自动识别"), new RuleChoice("light", "固定浅色"),
                     new RuleChoice("dark", "固定深色"), new RuleChoice("hold", "保持进入前的明暗") } };
             rules.Columns.Add(choice);
+            rules.CellPainting += Ui.PaintRuleChoice;
             rules.DefaultValuesNeeded += delegate(object sender, DataGridViewRowEventArgs args) { args.Row.Cells[1].Value = "auto"; };
             foreach (System.Collections.Generic.KeyValuePair<string, string> entry in settings.ApplicationRules) rules.Rows.Add(entry.Key, entry.Value);
-            applications.Controls.Add(rules);
-            Button remove = new ModernButton { Text = "删除选中规则", Location = new Point(16, 355), Size = new Size(155, 34) };
+            ruleCard.Controls.Add(rules);
+            Button remove = new ModernButton { Text = "删除选中规则", Location = new Point(12, 347), Size = new Size(155, 32) };
             remove.Click += delegate { if (rules.CurrentRow != null && !rules.CurrentRow.IsNewRow) rules.Rows.Remove(rules.CurrentRow); };
-            applications.Controls.Add(remove);
-            Button apply = new ModernButton { Text = "保存并应用", Location = new Point(366, 670), Size = new Size(140, 34) };
-            Button cancel = new ModernButton { Text = "取消", Location = new Point(520, 670), Size = new Size(120, 34), DialogResult = DialogResult.Cancel };
-            apply.Anchor = cancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
-            apply.Click += delegate { ApplySettings(startupCommand, expected); };
-            Controls.Add(apply); Controls.Add(cancel); AcceptButton = apply; CancelButton = cancel;
-            ((ModernButton)apply).Primary = true;
-            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(24,20), Size = new Size(38,38), SizeMode = PictureBoxSizeMode.Zoom });
-            Controls.Add(new Label { Text = "设置", Location = new Point(76,16), Size = new Size(300,35), Font = new Font(Ui.BodyFont.FontFamily,18,FontStyle.Bold) });
-            Controls.Add(new Label { Text = "让明暗与外观，保持恰到好处。", Location = new Point(77,51), Size = new Size(510,24), ForeColor = Color.DimGray, Font = new Font(Ui.BodyFont.FontFamily,9) });
-            ModernButton[] navigation = new ModernButton[3];
-            string[] pageNames = { "常规", "应用规则", "任务栏外观" };
+            ruleCard.Controls.Add(remove);
+
+            UiCard appearanceCard = AddCard(visuals, 47, 520);
+            appearanceCard.Anchor |= AnchorStyles.Bottom;
+            appearanceCard.Padding = new Padding(6);
+            appearance = new AppearanceEditor(settings.Glass) { Dock = DockStyle.Fill };
+            appearance.PreviewRequested += delegate(GlassSettings glass) { if (AppearancePreview != null) AppearancePreview(glass); };
+            appearanceCard.Controls.Add(appearance);
+
+            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(19, 24), Size = new Size(24, 24), SizeMode = PictureBoxSizeMode.Zoom });
+            AddLabel(this, "设置", 50, 22, 75, 28, heading: true);
+            Controls.Add(new Panel { BackColor = Ui.Border, Location = new Point(141, 16), Size = new Size(1, 572),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left });
+            ModernButton[] navigation = new ModernButton[pageNames.Length];
             for (int index = 0; index < navigation.Length; index++)
             {
                 int target = index;
-                navigation[index] = new ModernButton { Text = pageNames[index], Location = new Point(20 + index*210,79), Size = new Size(200,32) };
-                navigation[index].Click += delegate { tabs.SelectedIndex = target; }; Controls.Add(navigation[index]);
+                navigation[index] = new ModernButton { Name = "SettingsNavigation" + index, Navigation = true, Text = pageNames[index], AccessibleName = pageNames[index],
+                    Location = new Point(15, 68 + index*42), Size = new Size(112, 36), TabIndex = index };
+                navigation[index].Click += delegate { tabs.SelectedIndex = target; };
+                Controls.Add(navigation[index]);
             }
-            Ui.Apply(this); BackColor = Ui.Canvas;
-            Ui.OrderTabStops(general); Ui.OrderTabStops(applications);
-            for (int index = 0; index < navigation.Length; index++) navigation[index].TabIndex = index;
-            tabs.TabIndex = 3; tabs.TabStop = false; apply.TabIndex = 4; cancel.TabIndex = 5;
-            Action updateNavigation = delegate { for(int index = 0; index < navigation.Length; index++) { navigation[index].Selected = index == tabs.SelectedIndex; navigation[index].BackColor = index == tabs.SelectedIndex ? Ui.AccentSoft : Ui.Canvas; navigation[index].ForeColor = index == tabs.SelectedIndex ? Ui.Accent : Ui.Muted; navigation[index].Invalidate(); } };
-            tabs.SelectedIndexChanged += delegate { updateNavigation(); }; tabs.SelectedIndex = 0; updateNavigation();
-            Shown += delegate { updateNavigation(); };
+
+            Controls.Add(new Panel { BackColor = Ui.Border, Location = new Point(16, 598), Size = new Size(774, 1),
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right });
+            Button cancel = new ModernButton { Text = "取消", Location = new Point(528, 609), Size = new Size(112, 34),
+                DialogResult = DialogResult.Cancel, Anchor = AnchorStyles.Bottom | AnchorStyles.Right, TabIndex = 4 };
+            Button apply = new ModernButton { Text = "保存并应用", Primary = true, Location = new Point(650, 609), Size = new Size(140, 34),
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Right, TabIndex = 5 };
+            apply.Click += delegate { ApplySettings(startupCommand, expected); };
+            Controls.Add(cancel); Controls.Add(apply); AcceptButton = apply; CancelButton = cancel;
+            tabs.TabIndex = 3;
+            Ui.Apply(this);
+            foreach (ModernButton item in navigation) item.BackColor = Ui.Canvas;
+            foreach (Control section in new Control[] { general, launch, timing, glowCard, applications, ruleCard }) Ui.OrderTabStops(section);
+            Action updateNavigation = delegate {
+                for (int index = 0; index < navigation.Length; index++)
+                {
+                    ModernButton item = navigation[index];
+                    item.Selected = index == tabs.SelectedIndex;
+                    item.AccessibleDescription = item.Selected ? "当前页面" : "";
+                    item.Invalidate();
+                }
+            };
+            tabs.SelectedIndexChanged += delegate { updateNavigation(); };
+            tabs.SelectedIndex = 0;
+            updateNavigation();
             AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
             ResumeLayout(true);
             Shown += delegate {
+                updateNavigation();
                 Rectangle work = Screen.FromControl(this).WorkingArea;
                 if (Height > work.Height - 24) Height = Math.Max(300, work.Height - 24);
                 if (Width > work.Width - 24) Width = Math.Max(320, work.Width - 24);
                 Top = Math.Max(work.Top, Math.Min(Top, work.Bottom - Height));
                 Left = Math.Max(work.Left, Math.Min(Left, work.Right - Width));
             };
+        }
+
+        private static UiCard AddCard(TabPage page, int top, int height)
+        {
+            UiCard card = new UiCard { Location = new Point(10, top), Size = new Size(606, height), MinimumSize = new Size(606, 0) };
+            page.Controls.Add(card);
+            return card;
+        }
+
+        private static void AddLabel(Control parent, string text, int x, int y, int width, int height, bool muted = false, bool heading = false)
+        {
+            Label label = new Label { Text = text, Location = new Point(x, y), Size = new Size(width, height) };
+            if (muted) { label.ForeColor = Color.DimGray; label.Font = new Font(Ui.BodyFont.FontFamily, 9); }
+            if (heading) label.Font = new Font(Ui.BodyFont.FontFamily, 15, FontStyle.Bold);
+            parent.Controls.Add(label);
         }
         private void ApplySettings(string previousCommand, string expected)
         {
@@ -740,6 +914,8 @@ namespace LumaBar
                 if (startupChanged) StartupRegistration.Set(startup.Checked);
                 bool saved = save(delegate(Settings next) {
                     if (selectedPace != null) next.SetPace(selectedPace);
+                    next.MouseGlow = mouseGlow.Checked;
+                    next.MouseGlowRadius = glowRadius.Value; next.MouseGlowStrength = glowStrength.Value;
                     next.Transition = transition.SelectedIndex == 1 ? "soft" : transition.SelectedIndex == 2 ? "off" : "standard";
                     next.ApplicationRules = edited.ApplicationRules;
                     next.Glass = appearance.Value;
@@ -784,58 +960,66 @@ namespace LumaBar
         internal event Action SettingsRequested;
         internal event Action RetryRequested;
         internal bool AllowClose;
-        private readonly Label status;
-        private readonly Label brightness;
-        private readonly Label theme;
-        private readonly Label materialStatus;
-        private readonly Button retry;
-        private readonly ToolTip materialTip = new ToolTip();
-        private string sceneText = "等待场景";
-        private string basisText = "等待取样";
-        private string materialText = "尚未应用";
+        private readonly Label status, brightness, theme, sceneValue, basisValue, materialValue;
+        private readonly Button retry, pause;
+        private readonly ToolTip details = new ToolTip();
         private readonly ProgressBar meter;
-        private readonly Button pause;
+        private readonly ComboBox modes;
 
         internal StatusWindow()
         {
             SuspendLayout();
             Text = "LumaBar";
             Ui.Window(this);
-            ClientSize = new Size(520, 550);
-            MinimumSize = Size;
-            MaximumSize = Size;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(22, 25, 32);
-            ForeColor = Color.FromArgb(230, 235, 242);
-            Font = Ui.BodyFont;
-            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(30,27), Size = new Size(40,40), SizeMode = PictureBoxSizeMode.Zoom });
-            AddLabel("LumaBar", 82, 20, 270, 40, 23, Color.White);
-            AddLabel("0.6.7 · 随光而动", 84, 58, 260, 22, 9, Color.FromArgb(157,174,197));
-            AddButton("设置…", 364, 30, 126, delegate { if (SettingsRequested != null) SettingsRequested(); });
-            AddLabel("窗口铺满时跟随软件，普通窗口时跟随壁纸", 30, 93, 464, 26, 11, Color.FromArgb(157, 174, 197));
-            theme = AddLabel("等待取样", 30, 129, 460, 32, 16, Color.FromArgb(132, 206, 195));
-            status = AddLabel("切换到其他应用后开始检测", 30, 172, 460, 32, 10, ForeColor);
-            brightness = AddLabel("亮度 —", 30, 212, 460, 25, 10, Color.FromArgb(157, 174, 197));
-            meter = new ModernMeter { Location = new Point(32, 244), Size = new Size(456, 8), Maximum = 100 };
-            Controls.Add(meter);
-            modes = new ModernComboBox { Location = new Point(30, 274), Size = new Size(270, 30), DropDownStyle = ComboBoxStyle.DropDownList };
+            ClientSize = new Size(568, 588);
+
+            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(20,18), Size = new Size(36,36), SizeMode = PictureBoxSizeMode.Zoom });
+            AddLabel(this, "LumaBar", 68, 12, 260, 34, 17, FontStyle.Bold);
+            Version version = typeof(Program).Assembly.GetName().Version;
+            AddLabel(this, version.ToString(version.Revision > 0 ? 4 : 3), 70, 47, 170, 20, 9, muted: true);
+            AddButton(this, "HomeSettings", "设置…", 448, 22, 100, delegate { if (SettingsRequested != null) SettingsRequested(); });
+
+            UiCard detection = AddCard(80, 139);
+            AddLabel(detection, "明暗检测", 16, 12, 180, 28, 12, FontStyle.Bold);
+            UiCard badge = new UiCard { BackColor = Ui.AccentSoft, Location = new Point(355, 12), Size = new Size(157, 30) };
+            detection.Controls.Add(badge);
+            theme = AddLabel(badge, "等待取样", 7, 3, 143, 24, 9);
+            theme.TextAlign = ContentAlignment.MiddleCenter;
+            status = AddLabel(detection, "切换到其他应用后开始检测", 16, 48, 496, 43, 10);
+            status.Name = "DetectionStatus";
+            brightness = AddLabel(detection, "亮度 —", 16, 94, 496, 23, 9, muted: true);
+            brightness.Name = "DetectionBrightness";
+            meter = new ModernMeter { Name = "BrightnessMeter", AccessibleName = "当前取样亮度", Location = new Point(16, 121), Size = new Size(496, 5), Maximum = 100 };
+            detection.Controls.Add(meter);
+
+            UiCard operation = AddCard(231, 126);
+            AddLabel(operation, "运行模式", 16, 9, 180, 25, 12, FontStyle.Bold);
+            modes = new ModernComboBox { Name = "HomeMode", AccessibleName = "运行模式", Location = new Point(16, 44), Size = new Size(248, 32), DropDownStyle = ComboBoxStyle.DropDownList };
             modes.Items.AddRange(new object[] { "自动适应", "固定浅色", "固定深色", "仅检测（不修改）" });
             modes.SelectedIndex = 0;
-            modes.SelectedIndexChanged += delegate { if (ModeChanged != null) ModeChanged(modes.SelectedItem.ToString()); };
-            Controls.Add(modes);
-            pause = AddButton("暂停并恢复", 316, 272, 174, delegate { if (PauseRequested != null) PauseRequested(); });
-            AddButton("应用纠正…", 30, 319, 222, delegate { if (RulesRequested != null) RulesRequested(); });
-            AddButton("切换节奏…", 268, 319, 222, delegate { if (PaceRequested != null) PaceRequested(); });
-            materialStatus = AddLabel("等待场景与材质状态", 30, 365, 465, 68, 9, Color.FromArgb(132, 206, 195));
-            retry = AddButton("重试玻璃效果", 30, 438, 460, delegate { if (RetryRequested != null) RetryRequested(); });
-            retry.Text = "重新应用任务栏外观";
-            AddButton("收起到托盘", 30, 490, 222, delegate { if (HideRequested != null) HideRequested(); });
-            AddButton("退出并恢复", 268, 490, 222, delegate { if (ExitRequested != null) ExitRequested(); });
-            Ui.Apply(this); BackColor = Ui.Canvas;
-            Ui.OrderTabStops(this); ForeColor = Ui.Text;
-            FormClosed += delegate { materialTip.Dispose(); };
+            modes.SelectedIndexChanged += delegate { if (ModeChanged != null && modes.SelectedItem != null) ModeChanged(modes.SelectedItem.ToString()); };
+            operation.Controls.Add(modes);
+            pause = AddButton(operation, "HomePause", "暂停并恢复", 276, 39, 236, delegate { if (PauseRequested != null) PauseRequested(); });
+            AddButton(operation, "HomeRules", "应用纠正…", 16, 79, 248, delegate { if (RulesRequested != null) RulesRequested(); });
+            AddButton(operation, "HomePace", "切换节奏…", 276, 79, 236, delegate { if (PaceRequested != null) PaceRequested(); });
+
+            UiCard appearance = AddCard(369, 151);
+            AddLabel(appearance, "任务栏外观", 16, 13, 180, 28, 12, FontStyle.Bold);
+            retry = AddButton(appearance, "HomeRetry", "重新应用任务栏外观", 328, 10, 184, delegate { if (RetryRequested != null) RetryRequested(); });
+            sceneValue = AddDetail(appearance, "场景", "等待场景", 50, 24);
+            basisValue = AddDetail(appearance, "依据", "等待取样", 77, 24);
+            materialValue = AddDetail(appearance, "材质", "尚未应用", 104, 36);
+
+            Controls.Add(new Panel { BackColor = Ui.Border, Location = new Point(20, 532), Size = new Size(528, 1) });
+            AddButton(this, "HomeHide", "收起到托盘", 276, 544, 130, delegate { if (HideRequested != null) HideRequested(); });
+            AddButton(this, "HomeExit", "退出并恢复", 418, 544, 130, delegate { if (ExitRequested != null) ExitRequested(); });
+            Ui.Apply(this);
+            theme.ForeColor = Ui.SelectionText(true);
+            Ui.OrderTabStops(this);
+            Disposed += delegate { details.Dispose(); };
             FormClosing += delegate(object sender, FormClosingEventArgs args)
             {
                 if (!AllowClose && args.CloseReason == CloseReason.UserClosing)
@@ -848,7 +1032,7 @@ namespace LumaBar
                 Rectangle work = Screen.FromControl(this).WorkingArea;
                 if (Height > work.Height - 24 || Width > work.Width - 24)
                 {
-                    AutoScrollMinSize = ClientSize; AutoScroll = true; MinimumSize = Size.Empty;
+                    AutoScroll = true;
                     Height = Math.Min(Height, Math.Max(300, work.Height - 24));
                     Width = Math.Min(Width, Math.Max(320, work.Width - 24));
                     Top = Math.Max(work.Top, Math.Min(Top, work.Bottom - Height));
@@ -856,36 +1040,60 @@ namespace LumaBar
                 }
             };
         }
-        private Label AddLabel(string text, int x, int y, int width, int height, float size, Color color)
+        private UiCard AddCard(int y, int height)
         {
-            Label label = new Label { Text = text, Location = new Point(x, y), Size = new Size(width, height), Font = new Font("Microsoft YaHei UI", size), ForeColor = color, AutoEllipsis = true };
-            Controls.Add(label);
+            UiCard card = new UiCard { Location = new Point(20, y), Size = new Size(528, height) };
+            Controls.Add(card);
+            return card;
+        }
+        private static Label AddLabel(Control parent, string text, int x, int y, int width, int height, float size, FontStyle style = FontStyle.Regular, bool muted = false)
+        {
+            Label label = new Label { Text = text, Location = new Point(x, y), Size = new Size(width, height),
+                Font = new Font(Ui.BodyFont.FontFamily, size, style), ForeColor = muted ? Color.DimGray : Ui.Text,
+                AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
+            parent.Controls.Add(label);
             return label;
         }
-        private Button AddButton(string text, int x, int y, int width, Action action)
+        private static Label AddDetail(Control parent, string caption, string value, int y, int height)
         {
-            Button button = new ModernButton { Text = text, Location = new Point(x, y), Size = new Size(width, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(38, 45, 57), ForeColor = Color.White };
-            button.FlatAppearance.BorderColor = Color.FromArgb(69, 81, 100);
+            AddLabel(parent, caption, 16, y, 47, 24, 9, muted: true);
+            Label detail = AddLabel(parent, value, 68, y, 444, height, 9);
+            detail.TextAlign = ContentAlignment.TopLeft;
+            detail.Padding = new Padding(0,3,0,0);
+            return detail;
+        }
+        private static Button AddButton(Control parent, string name, string text, int x, int y, int width, Action action)
+        {
+            Button button = new ModernButton { Name = name, Text = text, Location = new Point(x, y), Size = new Size(width, 32) };
             button.Click += delegate { action(); };
-            Controls.Add(button);
+            parent.Controls.Add(button);
             return button;
         }
-        internal void UpdateSceneStatus(string scene, string basis)
-        { sceneText = scene; basisText = basis; RefreshMaterialText(); }
-        internal void UpdateMaterialStatus(string text, bool canRetry = false, bool allowAction = true)
-        { materialText = text; retry.Visible = allowAction; retry.Text = canRetry ? "重试玻璃效果" : "重新应用任务栏外观"; RefreshMaterialText(); }
-        private void RefreshMaterialText()
+        private void SetDetail(Label label, string value, string suffix = "")
         {
-            string text = "场景：" + sceneText + "\n依据：" + basisText + "\n材质：" + materialText;
-            materialStatus.Text = text;
-            materialTip.SetToolTip(materialStatus, text + "\n图标与文字明暗由 Windows 统一控制。");
+            if (label.Text == value) return;
+            label.Text = value;
+            details.SetToolTip(label, value + suffix);
         }
-        internal void SetPaused(bool value) { pause.Text = value ? "继续适应" : "暂停并恢复"; }
-        private readonly ComboBox modes;
+        internal void UpdateSceneStatus(string scene, string basis)
+        {
+            SetDetail(sceneValue, scene);
+            SetDetail(basisValue, basis);
+        }
+        internal void UpdateMaterialStatus(string text, bool canRetry = false, bool allowAction = true, string actionText = null)
+        {
+            SetDetail(materialValue, text, "\n图标与文字明暗由 Windows 统一控制。");
+            retry.Visible = allowAction;
+            retry.Text = actionText ?? (canRetry ? "重试玻璃效果" : "重新应用任务栏外观");
+        }
+        internal void SetPaused(bool value, bool retryRestore)
+        { pause.Text = value ? "继续适应" : "暂停并恢复"; pause.Enabled = !retryRestore; }
+        internal void SetRestoring(bool value) { pause.Enabled = modes.Enabled = !value; }
         internal void SelectMode(string value) { modes.SelectedItem = value; }
+        internal void UpdateStatusText(string text) { SetDetail(status, text); }
         internal void UpdateStatus(string text, double? value, Tone current, string source = "窗口")
         {
-            status.Text = text;
+            UpdateStatusText(text);
             theme.Text = "系统模式 · " + (current == Tone.Light ? "浅色" : "深色");
             brightness.Text = value.HasValue ? source + "亮度 " + value.Value.ToString("P0") + "  · 稳定后切换" : "亮度 —";
             meter.Value = value.HasValue ? Math.Max(0, Math.Min(100, (int)(value.Value * 100))) : 0;

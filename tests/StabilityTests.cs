@@ -10,9 +10,10 @@ namespace LumaBar
     internal sealed class FakeMaterialBackend : IMaterialBackend
     {
         internal uint Pid = 100;
-        internal int Connections, Applies, Restores;
+        internal int Connections, Applies, Restores, Disposals;
         internal bool FailConnect, FailApply, FailRestore;
         internal ManualResetEvent ConnectEntered, ConnectContinue;
+        internal ManualResetEvent RestoreEntered, RestoreContinue;
         internal readonly List<MaterialTarget> Applied = new List<MaterialTarget>();
         public uint ExplorerPid { get { return Pid; } }
         public void Connect()
@@ -31,29 +32,71 @@ namespace LumaBar
         public void Restore()
         {
             Restores++;
+            if (RestoreEntered != null) RestoreEntered.Set();
+            if (RestoreContinue != null && !RestoreContinue.WaitOne(3000)) throw new TimeoutException("Test restore timeout");
             if (FailRestore) throw new IOException("Injected restore failure");
         }
-        public void Dispose() { }
+        public void Dispose() { Disposals++; }
     }
 
     internal static partial class Tests
     {
         private static void StabilityTests()
         {
-            RecoveryInteractionTests(); ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); UiConsistencyTests(); MaterialRecoveryTests();
+            GlowTests(); RecoveryInteractionTests(); WallpaperInvalidationTests(); ContrastTests(); DisplayEditorTests(); SceneCoordinationTests(); VisualTransitionTests(); BlendSafetyTests(); UiConsistencyTests(); MaterialRecoveryTests(); AsyncTrayRestorationTests();
             using (StatusWindow window = new StatusWindow())
             {
                 int retry = 0; window.RetryRequested += delegate { retry++; };
                 window.UpdateSceneStatus("桌面", "壁纸偏亮 82%");
                 window.UpdateMaterialStatus("已降级为原生材质", true);
                 window.Show(); Pump();
-                Button action = null;
-                foreach (Control control in window.Controls) if (control is Button && control.Text == "重试玻璃效果") action = (Button)control;
-                if (action != null) action.PerformClick();
-                Check(retry == 1, "fallback state exposes a working one-click retry action");
+                Button action = (Button)window.Controls.Find("HomeRetry", true)[0];
+                action.PerformClick();
+                Check(retry == 1 && action.Text == "重试玻璃效果", "fallback state exposes a working one-click retry action");
                 window.UpdateMaterialStatus("仅检测", false, false);
-                Check(action != null && !action.Visible, "monitor-only status hides material modification actions");
+                Check(!action.Visible, "monitor-only status hides material modification actions");
+
+                System.Text.StringBuilder actions = new System.Text.StringBuilder();
+                window.SettingsRequested += delegate { actions.Append('S'); };
+                window.PauseRequested += delegate { actions.Append('P'); };
+                window.RulesRequested += delegate { actions.Append('R'); };
+                window.PaceRequested += delegate { actions.Append('T'); };
+                window.HideRequested += delegate { actions.Append('H'); };
+                window.ExitRequested += delegate { actions.Append('E'); };
+                foreach (string name in new[] { "HomeSettings", "HomePause", "HomeRules", "HomePace", "HomeHide", "HomeExit" })
+                    ((Button)window.Controls.Find(name, true)[0]).PerformClick();
+                Check(actions.ToString() == "SPRTHE", "redesigned main window routes each command to its original action");
+
+                string mode = null;
+                window.ModeChanged += delegate(string value) { mode = value; };
+                window.SelectMode("固定深色");
+                window.SetRestoring(true);
+                Check(mode == "固定深色" && !window.Controls.Find("HomeMode", true)[0].Enabled && !window.Controls.Find("HomePause", true)[0].Enabled,
+                    "main window selector reports mode changes and restoration disables both affected controls");
             }
+        }
+        private static void WallpaperInvalidationTests()
+        {
+            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            ThemeWallpaperSampler.Read(bounds);
+            WallpaperSampler.ReadTaskbar(bounds);
+            Check(!IsWallpaperCacheInvalidated(typeof(ThemeWallpaperSampler)) && !IsWallpaperCacheInvalidated(typeof(WallpaperSampler)),
+                "both wallpaper consumers schedule their own fingerprint recheck");
+            WallpaperSampler.Invalidate();
+            Check(IsWallpaperCacheInvalidated(typeof(ThemeWallpaperSampler)) && IsWallpaperCacheInvalidated(typeof(WallpaperSampler)),
+                "one wallpaper notification invalidates both consumers before their next read");
+            ThemeWallpaperSampler.Read(bounds);
+            WallpaperSampler.ReadTaskbar(bounds);
+            Check(!IsWallpaperCacheInvalidated(typeof(ThemeWallpaperSampler)) && !IsWallpaperCacheInvalidated(typeof(WallpaperSampler)),
+                "both consumers recheck immediately after invalidation");
+        }
+        private static bool IsWallpaperCacheInvalidated(Type sampler)
+        {
+            var fields = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+            var entries = (System.Collections.IDictionary)sampler.GetField("cache", fields).GetValue(null);
+            foreach (object entry in entries.Values)
+                if ((long)entry.GetType().GetField("NextCheck", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(entry) != 0) return false;
+            return true;
         }
         private static void RecoveryInteractionTests()
         {
@@ -81,7 +124,7 @@ namespace LumaBar
             using (PreferencesWindow preferences = new PreferencesWindow(saved,null,delegate(Action<Settings> change) { change(saved); saved.Validate(); return true; }))
             {
                 TabControl pages = (TabControl)preferences.Controls[0];
-                ComboBox animation = (ComboBox)pages.TabPages[0].Controls["Transition"];
+                ComboBox animation = (ComboBox)pages.TabPages[0].Controls.Find("Transition", true)[0];
                 Check(animation.SelectedIndex == 0 && animation.AccessibleName == "过渡动画", "animation selector defaults to current effect and has an accessible name");
                 animation.SelectedIndex = 1; preferences.Show(); Pump();
                 foreach(Control control in preferences.Controls) if(control is Button && control.Text == "保存并应用") ((Button)control).PerformClick();
@@ -306,29 +349,65 @@ namespace LumaBar
             using (StatusWindow home = new StatusWindow { AllowClose = true })
             using (PreferencesWindow preferences = new PreferencesWindow(settings,null,delegate { return true; }))
             {
-                Label dynamicLabel = null;
-                foreach(Control child in home.Controls) if(child is Label && child.Text == "切换到其他应用后开始检测") dynamicLabel = (Label)child;
+                Label dynamicLabel = (Label)home.Controls.Find("DetectionStatus", true)[0];
                 home.UpdateStatus("恢复后正在确认场景",null,Tone.Dark);
-                Check(dynamicLabel != null && dynamicLabel.AccessibilityObject.Name == "恢复后正在确认场景", "screen-reader status follows updated visible text after tab ordering");
+                Check(dynamicLabel.AccessibilityObject.Name == "恢复后正在确认场景", "screen-reader status follows updated visible text after tab ordering");
                 Check(home.BackColor == preferences.BackColor && home.ForeColor == preferences.ForeColor, "home and settings use one application palette");
                 Check(Ui.Chrome(home) == 0 && Ui.Chrome(preferences) == 0, "Windows accepts unified rounded caption, color and border attributes before display");
                 Check(home.Icon != null && preferences.Icon != null && Ui.AppIcon.ToBitmap().Width == 32, "branded application icon loads from embedded resources");
                 TabControl pages = (TabControl)preferences.Controls[0];
                 Check(pages is SettingsPages && pages.TabCount == 3, "modern settings navigation retains all three accessible pages");
-                pages.SelectedIndex = 2;
+                preferences.Show(); Pump();
+                ModernButton general = (ModernButton)preferences.Controls["SettingsNavigation0"];
+                ModernButton appearance = (ModernButton)preferences.Controls["SettingsNavigation2"];
+                appearance.PerformClick();
+                Check(pages.SelectedIndex == 2 && appearance.Selected && !general.Selected, "sidebar switches pages and follows the active navigation selection");
                 Check(Files.Json.Serialize(settings.Glass) == glass, "styling and changing settings pages never mutate glass preferences");
             }
             using (TintPicker picker = new TintPicker(Color.FromArgb(12,34,56)))
             {
-                TextBox hex = (TextBox)picker.Controls["HexColor"];
+                TextBox hex = (TextBox)picker.Controls.Find("HexColor", true)[0];
+                TrackBar red = (TrackBar)picker.Controls.Find("ColorChannel0", true)[0];
                 Check(hex.Text == "#0C2238", "themed color dialog preserves the existing tint exactly");
                 hex.Text = "#AABBCC";
-                Check(picker.SelectedColor.R == 170 && picker.SelectedColor.G == 187 && picker.SelectedColor.B == 204, "hex tint editing updates RGB without a legacy color dialog");
+                Check(picker.SelectedColor.R == 170 && picker.SelectedColor.G == 187 && picker.SelectedColor.B == 204 && red.Value == 170,
+                    "hex tint editing updates RGB without a legacy color dialog");
                 hex.Text = "#ABC";
                 Check(picker.SelectedColor.R == 170, "incomplete tint text cannot overwrite a valid color");
+                bool rejected = false, synchronized = false;
+                picker.Shown += delegate { picker.BeginInvoke(new Action(delegate {
+                    picker.AcceptButton.PerformClick();
+                    rejected = picker.DialogResult == DialogResult.None && picker.Controls["ColorHint"].ForeColor == Ui.ErrorText;
+                    red.Value = 16;
+                    synchronized = hex.Text == "#10BBCC" && picker.Controls.Find("ColorPreview", true)[0].BackColor == picker.SelectedColor;
+                    picker.AcceptButton.PerformClick();
+                })); };
+                DialogResult accepted = picker.ShowDialog();
+                Check(rejected && synchronized && accepted == DialogResult.OK && picker.SelectedColor.R == 16,
+                    "invalid color stays open and RGB editing synchronizes the preview before confirmation");
+            }
+            using (TintPicker picker = new TintPicker(Color.Navy))
+            {
+                picker.Shown += delegate { picker.BeginInvoke(new Action(delegate { picker.CancelButton.PerformClick(); })); };
+                Check(picker.ShowDialog() == DialogResult.Cancel, "color dialog cancel returns without confirming the color");
+            }
+            string message = String.Join("\n", new[] { "更新未完成。", "请检查文件权限。", new string('中', 220), "诊断详情结束。" });
+            using (NoticeDialog notice = new NoticeDialog(message, "LumaBar", false))
+            {
+                TextBox body = (TextBox)notice.Controls.Find("NoticeBody", true)[0];
+                bool canScroll = false;
+                notice.Shown += delegate { notice.BeginInvoke(new Action(delegate {
+                    canScroll = body.ScrollBars == ScrollBars.Vertical;
+                    notice.AcceptButton.PerformClick();
+                })); };
+                Check(notice.AcceptButton == notice.CancelButton && notice.ShowDialog() == DialogResult.OK,
+                    "notification retains modal confirmation and keyboard dismissal");
+                Check(body.ReadOnly && body.Multiline && body.ShortcutsEnabled && body.Text.Replace("\r\n", "\n") == message && canScroll,
+                    "notification keeps the complete plain message and supports scrolling and copying");
             }
             using (ContextMenuStrip menu = Ui.Menu())
-                Check(menu.Renderer is UiMenuRenderer && menu.Font.FontFamily.Name == Ui.BodyFont.FontFamily.Name, "tray menu shares the application typography and renderer");
+                Check(menu.Renderer is UiMenuRenderer && menu.Font.FontFamily.Name == Ui.BodyFont.FontFamily.Name && !menu.ShowImageMargin,
+                    "tray menu shares the application typography and uses a text-first layout");
         }
         private static MaterialPlan TestPlan(Tone tone)
         { return ReadabilityPolicy.Build(new GlassSettings(), MaterialScene.Desktop, tone, TwoDisplays(), "left"); }
@@ -343,6 +422,79 @@ namespace LumaBar
             System.Diagnostics.Stopwatch wait = System.Diagnostics.Stopwatch.StartNew();
             while (!condition() && wait.ElapsedMilliseconds < 5000) Thread.Sleep(5);
             if (!condition()) throw new Exception("Material worker did not complete");
+        }
+        private static void WaitForTray(Func<bool> condition)
+        {
+            var wait = System.Diagnostics.Stopwatch.StartNew();
+            while (!condition() && wait.ElapsedMilliseconds < 2500) { Application.DoEvents(); Thread.Sleep(5); }
+            if (!condition()) throw new Exception("Tray restoration did not reach the expected state");
+        }
+        private static ToolStripItem TrayAction(TrayApp app, string text)
+        {
+            foreach (ToolStripItem item in app.TrayMenu.Items) if (item.Text == text) return item;
+            throw new Exception("Missing tray action: " + text);
+        }
+        private static void AsyncTrayRestorationTests()
+        {
+            using (var entered = new ManualResetEvent(false))
+            using (var release = new ManualResetEvent(false))
+            {
+                var backend = new FakeMaterialBackend { RestoreEntered = entered, RestoreContinue = release };
+                var store = new FakeStore();
+                var theme = new ThemeController(store, new FakeJournal());
+                using (var materials = new MaterialController(backend))
+                using (var app = new TrayApp(new Settings { MouseGlow = false }, theme, false, true,
+                    @"Local\LumaBar-Test-AsyncRestore-" + Guid.NewGuid().ToString("N")))
+                {
+                    var hidden = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                    typeof(TrayApp).GetField("materials", hidden).SetValue(app, materials);
+                    var window = (StatusWindow)typeof(TrayApp).GetField("window", hidden).GetValue(app);
+                    bool exited = false;
+                    app.ThreadExit += delegate { exited = true; };
+                    try
+                    {
+                        theme.Apply(Tone.Dark);
+                        WorkerApply(materials, TestPlan(Tone.Dark));
+                        ToolStripItem pause = TrayAction(app, "暂停并恢复原主题");
+                        pause.PerformClick();
+                        bool responsive = false;
+                        window.BeginInvoke(new Action(delegate { responsive = true; }));
+                        WaitForTray(delegate { return entered.WaitOne(0) && responsive; });
+                        Check(!pause.Enabled && store.Value.Tone == Tone.Dark, "pause leaves the UI responsive while material restoration is blocked");
+                        release.Set();
+                        WaitForTray(delegate { return pause.Enabled; });
+                        Check(backend.Restores == 1 && store.Value.Tone == Tone.Light && !exited, "pause completes after restoring material and theme");
+
+                        theme.Apply(Tone.Dark);
+                        WorkerApply(materials, TestPlan(Tone.Dark));
+                        release.Reset(); entered.Reset(); backend.FailRestore = true;
+                        ToolStripItem exit = TrayAction(app, "退出并恢复");
+                        exit.PerformClick(); exit.PerformClick();
+                        responsive = false;
+                        window.BeginInvoke(new Action(delegate { responsive = true; }));
+                        WaitForTray(delegate { return entered.WaitOne(0) && responsive; });
+                        Check(!exited && !pause.Enabled && store.Value.Tone == Tone.Dark, "exit processes UI messages while waiting for material restoration");
+                        release.Set();
+                        WaitForTray(delegate { return pause.Enabled; });
+                        Check(!exited && pause.Text == "重试恢复" && backend.Restores == 2, "failed exit keeps the tray paused and offers a retry");
+                        Check(store.Value.Tone == Tone.Light, "failed material restoration during exit still restores the theme");
+
+                        backend.FailRestore = false;
+                        typeof(TrayApp).GetMethod("RetryMaterials", hidden).Invoke(app, null);
+                        WaitForTray(delegate { return pause.Enabled && pause.Text == "恢复自动适应"; });
+                        Check(!exited && backend.Restores == 3, "the tray retry confirms restoration and leaves the app paused");
+                        exit.PerformClick();
+                        WaitForTray(delegate { return exited; });
+                        Check(backend.Restores == 3 && backend.Disposals == 1, "exit releases the worker without restoring already released material again");
+                    }
+                    finally
+                    {
+                        backend.FailRestore = false;
+                        release.Set();
+                        if (!exited) app.ExitThread();
+                    }
+                }
+            }
         }
         private static void MaterialRecoveryTests()
         {

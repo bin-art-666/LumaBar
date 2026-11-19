@@ -1,8 +1,8 @@
-# LumaBar 0.6.7 — 自动明暗与玻璃任务栏
+# LumaBar — 自动明暗与玻璃任务栏
 
 根据最大化窗口或桌面壁纸的明暗，自动切换 Windows 11 任务栏、开始菜单和快捷设置，并为任务栏叠加可调的透明、模糊和亚克力材质。
 
-**[下载 0.6.7 预览版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.6.7)** · [0.4 稳定版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.4.0) · [验证记录](VALIDATION.md) · [GPL-3.0 许可证](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
+**[下载 0.6.14 预览版（Windows x64）](https://github.com/bin-art-666/LumaBar/releases/download/v0.6.14/LumaBar-0.6.14-preview-x64.zip)** · [源码包](https://github.com/bin-art-666/LumaBar/releases/download/v0.6.14/LumaBar-0.6.14-source.zip) · [更新说明](https://github.com/bin-art-666/LumaBar/releases/tag/v0.6.14) · [0.4.0 稳定版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.4.0) · [构建与测试](#构建与测试) · [验证记录](VALIDATION.md) · [GPL-3.0 许可证](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
 
 ![LumaBar 主界面](docs/screenshots/main.png)
 
@@ -15,6 +15,55 @@
 </details>
 
 0.4 新增图形设置页与可选开机自启。在主界面点击“设置…”或从托盘打开“设置…”，可以调整切换速度、管理应用规则，或开启“登录 Windows 后自动启动”。保存后立即生效，取消则不保存。高级参数仍可在 settings.json 中调整。
+
+## 0.6.14：统一主界面、设置与托盘样式（2026-11-19）
+
+- 主界面采用圆角状态卡片，设置改为左侧导航，托盘菜单按操作分组。颜色选择器和提示弹窗沿用同一套深浅配色，保留 HEX / RGB 联动、取消和保存操作。
+- 优化鼠标光效位图生成。壁纸变更后同时刷新自动明暗和玻璃缓存，暂停与退出期间异步等待材质恢复，失败后可重试。
+- ZIP 以编译产物的版本命名。可从现有版本的托盘菜单选择「从更新包更新…」，使用 `LumaBar-0.6.14-preview-x64.zip` 更新并保留本机配置与自启项。
+
+## 0.6.13：更小的鼠标光效半径（2026-11-02）
+
+- 半径范围从 50–200% 扩展为 **5–200%**，5% 可缩到指针附近；键盘微调步长改为 1%，Page Up / Down 步长为 10%。
+- 保留 100% 默认大小、原有强度和当前保存半径；拖动实时预览，保存后生效。
+
+## 0.6.12：修复保存后光效仍使用旧设置（2026-11-02）
+
+- 修复光效回调捕获构造函数启动设置对象的问题。保存设置采用新对象替换后，光效现在读取当前生效设置，开关、半径与强度不再继续沿用旧值。
+- 保留实时预览、取消恢复和 0% 无光；保存后无需重启，重复调整同样生效。
+- 主界面版本号从程序集动态读取，避免始终显示历史 0.6.7。
+
+## 0.6.11：真正的零亮度与低档微光（2026-11-02）
+
+- 光效强度范围扩展到 **0–100%**；0% 直接销毁覆盖窗口，不保留任何光效。
+- 低档亮度改用更细的曲线：5% 的中心不透明度不超过 5/255，10% 也比之前更淡；25% 与高强度白光保留。
+- 拖动半径、强度或切换开关时，任务栏实时预览；点击取消、关闭设置时恢复原参数，保存后持久生效，避免只看到设置预览而误判任务栏实际亮度。
+
+## 0.6.10：增强高强度光照（2026-11-02）
+
+- 强度超过 25% 后逐步扩大中心亮区，并从淡青色过渡到明亮白光；100% 在半径中部仍有明显照明，改善旧版仅指针中心亮、外围快速衰减的问题。
+- 浅色任务栏不再在高强度时强制降低到旧版的淡青染色；浅深模式的最大强度均为明亮白光。
+- 25% 及以下保留原柔光曲线；半径、强度与玻璃配置保留，预览与实际任务栏使用相同光效生成逻辑。
+
+## 0.6.9：光效半径与强度（2026-11-02）
+
+在“设置 → 常规 → 任务栏鼠标光效”向下滚动，可调节：
+
+- **光晕半径**：50–200%，相对原有自适应大小缩放；100% 保持旧版范围。
+- **光效强度**：5–100%，25% 保持旧版柔光。
+- 两个滑块显示当前数值，支持键盘调节，并提供随滑块变化的效果预览和“恢复光效默认值”。关闭光效时禁用滑块，保留已选数值。
+- 点击“保存并应用”后任务栏立即使用新数值，取消不保存。原有配置缺少字段时自动使用 100% / 25%，不修改玻璃与明暗参数。
+- 高级配置字段：`MouseGlowRadius`（5–200）与 `MouseGlowStrength`（0–100）。
+
+![鼠标光效设置](docs/screenshots/glow-settings.png)
+
+## 0.6.8：任务栏鼠标光效（2026-11-02）
+
+- 鼠标进入可见任务栏时，淡青白色柔光在指针周围渐显，随移动跟随，离开后约 220 ms 淡出。光晕仅绘制在当前任务栏范围，支持主、副任务栏与负坐标显示器。
+- “设置 → 常规 → 任务栏鼠标光效”提供独立开关，默认开启。保留原有玻璃、明暗判断与过渡配置。
+- 光效使用小范围逐像素透明覆盖层，不接收点击、不抢焦点、不新增托盘图标。鼠标静止且渐显完成后不再重绘；离开后销毁覆盖窗口。
+- 暂停、锁屏、休眠、高对比度、仅检测及任务栏明暗过渡期间隐藏光效；任务栏被菜单或其他窗口覆盖时不显示，不唤出自动隐藏的任务栏。
+- 使用 Windows 的分层窗口接口；实现依据见 [UpdateLayeredWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-updatelayeredwindow)。本版不修改原生玻璃组件。
 
 ## 0.6.7：后台占用与更新回退（2026-11-02）
 
@@ -74,8 +123,6 @@
 - 均衡来源确认恢复 180 ms，来源切换间隔 400 ms；新版标准速度自动迁移，自定义高级时间参数保留。
 - 玻璃材质、染色不透明度、模糊、对比度保护、多屏外观及预览配置保持原样。任务栏区域壁纸选项用于玻璃染色取样；系统明暗使用 0.4 整屏壁纸策略。
 - 本机统一运行目录为 `D:\APP\LumaBar`，仅保留当前程序及一个注册表自启入口。开发源码历史保留在 GitHub；本机开发副本已清理。
-
-GitHub `main` 与顶部 v0.6.7 下载入口包含当前修改；下方 v0.6.0 / v0.4.0 链接为历史发布。构建当前源码请运行 `build.ps1`，打包请运行 `package.ps1`；输出包以 0.6.7 命名。下面的 0.5.1 响应提速说明属于历史版本。
 
 ## 0.6：可读性与稳定性
 
@@ -262,9 +309,14 @@ Windows 的实际刷新时机和视觉效果取决于系统版本及现有主题
 
 ```powershell
 .\build.ps1
+.\package.ps1
 ```
 
-脚本使用 Windows 自带 .NET Framework C# 编译器，生成 `LumaBar.exe`，然后运行逻辑测试。构建会核验原生组件 SHA256；组件缺失时先运行 `./native/fetch.ps1`。对应原生源码通过 `git submodule update --init --recursive` 获取。也提供 `LumaBar.csproj`，可用装有 .NET Framework 4.8 开发工具的 Visual Studio / MSBuild 打开和构建。
+`build.ps1` 使用 Windows 自带的 .NET Framework C# 编译器，生成 `LumaBar.exe` 和 `tests/bin/LumaBar.Tests.exe`，然后运行回归测试。构建会核验原生组件 SHA256，组件缺失时先运行 `./native/fetch.ps1`。也可以用装有 .NET Framework 4.8 开发工具的 Visual Studio / MSBuild 构建 `LumaBar.csproj`。
+
+构建测试通过后再运行 `package.ps1`。脚本从生成的 `LumaBar.exe` 读取文件版本，生成 `LumaBar-<版本>-preview-x64.zip` 和 `LumaBar-<版本>-source.zip`，两个 ZIP 均成功生成后才写入 `dist`。文件名在修订号为 0 时省略末尾的 `.0`，更新清单保留完整文件版本。
+
+打包优先使用子模块中固定的 TranslucentTB 提交。子模块不可用时，脚本校验并使用 `native/upstream-cache/` 内以 `TranslucentTB-<提交哈希>.zip` 命名的源码归档，缺少本地归档时从 GitHub 获取。
 
 ```powershell
 # 展示一个测试窗口，验证深色变浅色时能实际读取新的像素；不修改真实主题。
@@ -290,20 +342,19 @@ Windows 的实际刷新时机和视觉效果取决于系统版本及现有主题
 .\tests\bin\LumaBar.Tests.exe --material-watchdog
 ```
 
-`src/Readability.cs` 是壁纸对比度保护、多屏材质计划和场景协调；`src/WindowEvents.cs` 是窗口事件与短时检测调度；`src/Materials.cs` 是原生接口、材质线程和恢复协调；`src/AppearanceEditor.cs` 是外观设置与预览。
+`src/Readability.cs` 是壁纸对比度保护、多屏材质计划和场景协调；`src/Activity.cs` 是窗口事件与短时检测调度；`src/Materials.cs` 是原生接口、材质线程和恢复协调；`src/AppearanceEditor.cs` 是外观设置与预览。
 
 文件结构：`src/Core.cs` 是亮度、防闪烁和可恢复主题事务；`src/Native.cs` 是窗口状态路由、Win32 取样和任务栏通知；`src/Wallpaper.cs` 是屏幕覆盖判定与壁纸原图分析；`src/Storage.cs` 是注册表与原子恢复记录；`src/App.cs` 是托盘和控制面板；`tests/Tests.cs` 和 `tests/StabilityTests.cs` 是测试。
 
-0.5.1 的只读响应检查（不写主题注册表）：
+只读响应检查（不写主题注册表）：
 
 ```powershell
-.\tests\bin\LumaBar.Tests.exe --events
 .\tests\bin\LumaBar.Tests.exe --refresh-speed
 .\tests\bin\LumaBar.Tests.exe --wallpaper-cache
 .\tests\bin\LumaBar.Tests.exe --readability
 ```
 
-`package.ps1 -OutputDirectory <输出目录>` 可单独生成默认配置的公开包；增加 `-UserSettingsPath <旧版 settings.json 完整路径>` 可在生成新版目录时保留用户外观与规则。旧版运行目录无需覆盖；先从旧版托盘“退出并恢复”，再启动新版。
+`package.ps1 -OutputDirectory <输出目录>` 可指定两个 ZIP 的输出目录。增加 `-UserSettingsPath <旧版 settings.json 完整路径>` 会将指定配置放入运行包，适合个人迁移。先从旧版托盘选择“退出并恢复”，再解压并启动新版。
 
 ## 技术参考
 

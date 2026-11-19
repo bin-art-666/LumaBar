@@ -55,6 +55,16 @@ namespace LumaBar
                     }
                     return 0;
                 }
+                if (args.Length == 2 && args[0] == "--render-notice")
+                {
+                    Application.EnableVisualStyles(); Native.EnableDpi();
+                    using (NoticeDialog window = new NoticeDialog("保存未完成，请检查主界面错误信息后重试。", "无法保存设置", false))
+                    {
+                        window.Show(); Pump();
+                        SaveClientPreview(window, args[1]);
+                    }
+                    return 0;
+                }
                 if (args.Length == 1 && args[0] == "--preview-ui")
                 {
                     Application.EnableVisualStyles(); Native.EnableDpi();
@@ -66,19 +76,29 @@ namespace LumaBar
                     }
                     return 0;
                 }
-                if (args.Length == 2 && args[0] == "--render-menu")
+                if (args.Length == 2 && (args[0] == "--render-menu" || args[0] == "--render-menu-pace"))
                 {
                     Application.EnableVisualStyles(); Native.EnableDpi();
                     using (TrayApp sample = new TrayApp(new Settings(), new ThemeController(new FakeStore(), new FakeJournal()), true, true))
                     {
                         ContextMenuStrip menu = sample.TrayMenu;
                         menu.Show(new Point(50,50)); Pump();
-                        using (Bitmap bitmap = new Bitmap(menu.Width,menu.Height)) { menu.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size)); bitmap.Save(args[1]); }
+                        ToolStripDropDown preview = menu;
+                        if (args[0] == "--render-menu-pace")
+                        {
+                            ToolStripMenuItem pace = (ToolStripMenuItem)menu.Items["TrayPace"];
+                            pace.ShowDropDown(); Pump();
+                            preview = pace.DropDown;
+                            Check(!((ToolStripDropDownMenu)preview).ShowImageMargin && ((ToolStripDropDownMenu)preview).ShowCheckMargin,
+                                "pace submenu uses the same compact layout and shows the selected pace checkmark");
+                        }
+                        else menu.Items[1].Select();
+                        using (Bitmap bitmap = new Bitmap(preview.Width,preview.Height)) { preview.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size)); bitmap.Save(args[1]); }
                         menu.Close(); sample.ExitThread();
                     }
                     return 0;
                 }
-                if (args.Length == 2 && (args[0] == "--render-settings" || args[0] == "--render-rules" || args[0] == "--render-appearance"))
+                if (args.Length == 2 && (args[0] == "--render-glow" || args[0] == "--render-settings" || args[0] == "--render-rules" || args[0] == "--render-appearance"))
                 {
                     Application.EnableVisualStyles(); Native.EnableDpi();
                     Settings preview = new Settings(); preview.ApplicationRules.Add("Code", "dark"); preview.ApplicationRules.Add("WeChat", "light");
@@ -87,6 +107,11 @@ namespace LumaBar
                         if (args[0] == "--render-rules") ((TabControl)window.Controls[0]).SelectedIndex = 1;
                         if (args[0] == "--render-appearance") ((TabControl)window.Controls[0]).SelectedIndex = 2;
                         window.Show(); Pump();
+                        if (args[0] == "--render-glow")
+                        {
+                            TabPage general = ((TabControl)window.Controls[0]).TabPages[0];
+                            general.ScrollControlIntoView(general.Controls["ResetMouseGlow"]); Pump();
+                        }
                         SaveClientPreview(window,args[1]);
                     }
                     return 0;
@@ -97,13 +122,13 @@ namespace LumaBar
                     Native.EnableDpi();
                     using (StatusWindow window = new StatusWindow())
                     {
-                        window.UpdateStatus("桌面壁纸：优先分析任务栏所在区域", 0.82, Tone.Light, "壁纸");
+                        window.UpdateStatus("普通窗口 / 桌面：跟随壁纸", 0.82, Tone.Light, "壁纸");
                         window.UpdateSceneStatus("桌面", "任务栏区域壁纸偏亮 82%");
                         window.UpdateMaterialStatus(args[0] == "--render-fallback" ? "已降级为原生材质 · 组件连接失败（自动明暗继续）" : "玻璃效果已应用 · 显示器 1：透明玻璃 14%", args[0] == "--render-fallback");
                         window.Show(); Pump();
                         SaveClientPreview(window,args[1]);
                     }
-                    Console.WriteLine("Rendered settings window.");
+                    Console.WriteLine("Rendered main window.");
                     return 0;
                 }
                 if (args.Length == 1 && args[0] == "--update-worker") { UpdateWorkerTest(); return 0; }
@@ -475,9 +500,8 @@ namespace LumaBar
             using (PreferencesWindow window = new PreferencesWindow(current, null, delegate(Action<Settings> change) { change(current); current.Validate(); saved = true; return true; }))
             {
                 TabControl tabs = (TabControl)window.Controls[0];
-                ComboBox pace = null; DataGridView grid = null;
-                foreach (Control control in tabs.TabPages[0].Controls) if (control.Name == "Pace") pace = (ComboBox)control;
-                foreach (Control control in tabs.TabPages[1].Controls) if (control is DataGridView) grid = (DataGridView)control;
+                ComboBox pace = (ComboBox)tabs.TabPages[0].Controls.Find("Pace", true)[0];
+                DataGridView grid = (DataGridView)tabs.TabPages[1].Controls.Find("ApplicationRules", true)[0];
                 Check(pace.SelectedItem.ToString() == "均衡", "settings recognizes current timing preset");
                 pace.SelectedItem = "灵敏";
                 grid.Rows.Clear(); grid.Rows.Add("WeChat.exe", "light");

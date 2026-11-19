@@ -10,13 +10,17 @@ namespace LumaBar
     internal static class Ui
     {
         internal static readonly bool Dark = ReadDark();
-        internal static readonly Color Canvas = Dark ? Color.FromArgb(28,31,35) : Color.FromArgb(245,247,247);
-        internal static readonly Color Surface = Dark ? Color.FromArgb(37,41,45) : Color.White;
-        internal static readonly Color Text = Dark ? Color.FromArgb(239,243,242) : Color.FromArgb(30,43,41);
-        internal static readonly Color Muted = Dark ? Color.FromArgb(169,182,178) : Color.FromArgb(100,116,111);
-        internal static readonly Color Border = Dark ? Color.FromArgb(66,76,72) : Color.FromArgb(218,227,222);
-        internal static readonly Color Accent = Dark ? Color.FromArgb(139,224,194) : Color.FromArgb(15,112,91);
-        internal static readonly Color AccentSoft = Dark ? Color.FromArgb(42,72,63) : Color.FromArgb(226,244,236);
+        private static readonly bool HighContrast = SystemInformation.HighContrast;
+        internal static readonly Color Canvas = HighContrast ? SystemColors.Window : Dark ? Color.FromArgb(32,33,36) : Color.FromArgb(242,243,245);
+        internal static readonly Color Surface = HighContrast ? SystemColors.Window : Dark ? Color.FromArgb(43,45,48) : Color.FromArgb(250,250,252);
+        internal static readonly Color Text = HighContrast ? SystemColors.WindowText : Dark ? Color.FromArgb(244,244,245) : Color.FromArgb(32,33,38);
+        internal static readonly Color Muted = HighContrast ? SystemColors.WindowText : Dark ? Color.FromArgb(172,176,184) : Color.FromArgb(83,87,96);
+        internal static readonly Color Border = HighContrast ? SystemColors.WindowText : Dark ? Color.FromArgb(64,66,71) : Color.FromArgb(218,220,225);
+        internal static readonly Color Accent = HighContrast ? SystemColors.Highlight : Dark ? Color.FromArgb(50,212,235) : Color.FromArgb(0,113,132);
+        internal static readonly Color AccentText = HighContrast ? SystemColors.HighlightText : Dark ? Color.FromArgb(13,31,35) : Color.White;
+        internal static readonly Color AccentSoft = HighContrast ? SystemColors.Highlight : Dark ? Color.FromArgb(32,60,68) : Color.FromArgb(221,240,244);
+        internal static readonly Color Hover = HighContrast ? SystemColors.Highlight : Dark ? Color.FromArgb(55,57,61) : Color.FromArgb(231,233,237);
+        internal static readonly Color ErrorText = HighContrast ? SystemColors.WindowText : Dark ? Color.FromArgb(255,180,171) : Color.FromArgb(156,37,40);
         internal static readonly Font BodyFont = new Font("Microsoft YaHei UI", 10);
         internal static readonly Icon AppIcon = LoadIcon();
         internal static readonly Image BrandImage = LoadBrand();
@@ -66,7 +70,7 @@ namespace LumaBar
             foreach (Control child in root.Controls)
             {
                 TabPage page = child as TabPage;
-                if (page != null) { page.UseVisualStyleBackColor = false; page.BackColor = Surface; page.ForeColor = Text; }
+                if (page != null) { page.UseVisualStyleBackColor = false; page.BackColor = Canvas; page.ForeColor = Text; }
                 AppearanceEditor editor = child as AppearanceEditor;
                 if (editor != null) { editor.BackColor = Surface; editor.ForeColor = Text; }
                 Label label = child as Label;
@@ -92,7 +96,7 @@ namespace LumaBar
                         ComboBox box = (ComboBox)sender; bool selected = (e.State & DrawItemState.Selected) != 0;
                         using (Brush brush = new SolidBrush(selected ? AccentSoft : Surface)) e.Graphics.FillRectangle(brush,e.Bounds);
                         string caption = e.Index >= 0 && e.Index < box.Items.Count ? box.GetItemText(box.Items[e.Index]) : box.Text;
-                        TextRenderer.DrawText(e.Graphics,caption,box.Font,new Rectangle(e.Bounds.X+6,e.Bounds.Y,e.Bounds.Width-12,e.Bounds.Height),box.Enabled ? Text : Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
+                        TextRenderer.DrawText(e.Graphics,caption,box.Font,new Rectangle(e.Bounds.X+6,e.Bounds.Y,e.Bounds.Width-12,e.Bounds.Height),box.Enabled ? SelectionText(selected) : Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
                     };
                     combo.Tag = "UiCombo";
                 }
@@ -107,7 +111,7 @@ namespace LumaBar
                     grid.ColumnHeadersDefaultCellStyle.BackColor = Canvas; grid.ColumnHeadersDefaultCellStyle.ForeColor = Muted;
                     grid.ColumnHeadersDefaultCellStyle.Font = BodyFont; grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(8);
                     grid.DefaultCellStyle.BackColor = Surface; grid.DefaultCellStyle.ForeColor = Text;
-                    grid.DefaultCellStyle.SelectionBackColor = AccentSoft; grid.DefaultCellStyle.SelectionForeColor = Text;
+                    grid.DefaultCellStyle.SelectionBackColor = AccentSoft; grid.DefaultCellStyle.SelectionForeColor = SelectionText(true);
                     grid.DefaultCellStyle.Padding = new Padding(8,6,8,6); grid.RowTemplate.Height = 36;
                     grid.AlternatingRowsDefaultCellStyle.BackColor = Canvas;
                     foreach (DataGridViewColumn column in grid.Columns) { DataGridViewComboBoxColumn choice = column as DataGridViewComboBoxColumn; if (choice != null) choice.FlatStyle = FlatStyle.Flat; }
@@ -117,61 +121,119 @@ namespace LumaBar
         }
         internal static ContextMenuStrip Menu()
         {
-            ContextMenuStrip menu = new ContextMenuStrip { Font = BodyFont, Renderer = new UiMenuRenderer(), BackColor = Surface, ForeColor = Text, Padding = new Padding(6), ImageScalingSize = new Size(24,24), ShowImageMargin = true };
+            ContextMenuStrip menu = new ContextMenuStrip { Font = BodyFont, Renderer = new UiMenuRenderer(), BackColor = Surface, ForeColor = Text, ShowImageMargin = false };
             menu.Opening += delegate { StyleMenu(menu); };
-            menu.Opened += delegate { using(GraphicsPath path=Round(new RectangleF(0,0,menu.Width,menu.Height),9)) { Region old=menu.Region;menu.Region=new Region(path);if(old!=null)old.Dispose(); } };
+            menu.SizeChanged += delegate { ShapeMenu(menu); };
             return menu;
         }
-        private static void StyleMenu(ToolStrip menu)
+        internal static Color SelectionText(bool selected) { return selected && HighContrast ? SystemColors.HighlightText : Text; }
+        internal static void PaintRuleChoice(object sender, DataGridViewCellPaintingEventArgs e)
         {
-            menu.Font = BodyFont; menu.Renderer = new UiMenuRenderer(); menu.BackColor = Surface; menu.ForeColor = Text;
-            foreach (ToolStripItem item in menu.Items)
+            DataGridView grid = (DataGridView)sender;
+            if (HighContrast || e.RowIndex < 0 || e.ColumnIndex < 0 || !(grid.Columns[e.ColumnIndex] is DataGridViewComboBoxColumn)) return;
+
+            // Keep the native combo cell and its mouse target, but match the closed chevron to the row.
+            float scale = Math.Max(1, e.CellStyle.Font.Height / 15f);
+            Rectangle cell = e.CellBounds;
+            int width = Math.Min(cell.Width - 2, (int)Math.Ceiling(23 * scale));
+            if (width < 2 || cell.Height < 3) return;
+            bool selected = (e.State & DataGridViewElementStates.Selected) != 0;
+            e.Paint(e.ClipBounds, e.PaintParts & ~DataGridViewPaintParts.Focus);
+            using (Brush brush = new SolidBrush(selected ? e.CellStyle.SelectionBackColor : e.CellStyle.BackColor))
+                e.Graphics.FillRectangle(brush, cell.Right - width - 1, cell.Top + 1, width, cell.Height - 2);
+            float x = cell.Right - width / 2f - 1, y = cell.Top + cell.Height / 2f;
+            SmoothingMode previous = e.Graphics.SmoothingMode;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (Pen pen = new Pen(Muted, 1.4f * scale))
+                e.Graphics.DrawLines(pen, new[] { new PointF(x-4*scale,y-2*scale), new PointF(x,y+2*scale), new PointF(x+4*scale,y-2*scale) });
+            e.Graphics.SmoothingMode = previous;
+            e.Paint(e.ClipBounds, e.PaintParts & DataGridViewPaintParts.Focus);
+            e.Handled = true;
+        }
+        private static void ShapeMenu(ToolStrip menu)
+        {
+            if (menu.Width < 2 || menu.Height < 2) return;
+            using (GraphicsPath path = Round(new RectangleF(0, 0, menu.Width, menu.Height), 8 * menu.DeviceDpi / 96f))
             {
-                item.ForeColor = Text; item.Padding = new Padding(8,6,12,6);
-                ToolStripMenuItem branch = item as ToolStripMenuItem;
-                if (branch != null && branch.HasDropDownItems)
-                {
-                    StyleMenu(branch.DropDown);
-                    if (!Object.Equals(branch.Tag,"Styled")) { branch.Tag = "Styled"; branch.DropDownOpening += delegate { StyleMenu(branch.DropDown); }; }
-                }
+                Region previous = menu.Region;
+                menu.Region = new Region(path);
+                if (previous != null) previous.Dispose();
             }
         }
-        internal static Image Glyph(string code)
+        private static void StyleMenu(ToolStripDropDownMenu menu)
         {
-            Bitmap image = new Bitmap(32,32);
-            using (Graphics g = Graphics.FromImage(image)) using (Pen pen = new Pen(Accent,1.6f))
+            menu.SuspendLayout();
+            int pad = Math.Max(4, 5 * menu.DeviceDpi / 96);
+            menu.Padding = new Padding(pad);
+            bool checks = false;
+            foreach (ToolStripItem item in menu.Items)
             {
-                g.SmoothingMode = SmoothingMode.AntiAlias; g.ScaleTransform(1.6f,1.6f); pen.StartCap=pen.EndCap=LineCap.Round; pen.LineJoin=LineJoin.Round;
-                if(code == "\uE713")
+                item.ForeColor = Text;
+                ToolStripMenuItem branch = item as ToolStripMenuItem;
+                if (branch == null) continue;
+                branch.Padding = new Padding(pad * 2, pad, pad * 3, pad);
+                checks |= branch.Checked || branch.CheckOnClick;
+                ToolStripDropDownMenu submenu = branch.HasDropDownItems ? branch.DropDown as ToolStripDropDownMenu : null;
+                if (submenu != null && !Object.Equals(branch.Tag, "Styled"))
                 {
-                    PointF[] points=new PointF[24]; for(int i=0;i<24;i++){double angle=i*Math.PI/12;double radius=i%4<2?8:6;points[i]=new PointF(10+(float)(radius*Math.Cos(angle)),10+(float)(radius*Math.Sin(angle)));}
-                    g.DrawPolygon(pen,points);g.DrawEllipse(pen,7,7,6,6);
+                    branch.Tag = "Styled";
+                    submenu.Font = BodyFont; submenu.Renderer = new UiMenuRenderer();
+                    submenu.BackColor = Surface; submenu.ForeColor = Text; submenu.ShowImageMargin = false;
+                    submenu.Opening += delegate { StyleMenu(submenu); };
+                    submenu.SizeChanged += delegate { ShapeMenu(submenu); };
                 }
-                else if(code == "\uE769") { g.DrawLine(pen,6,4,6,16);g.DrawLine(pen,14,4,14,16); }
-                else if(code == "\uE72C") {g.DrawArc(pen,4,4,12,12,50,270);g.DrawLines(pen,new PointF[]{new PointF(11,3),new PointF(16,4),new PointF(15,9)});}
-                else if(code == "\uE790") {g.DrawRectangle(pen,3,4,14,12);g.DrawLine(pen,9,4,9,16);g.DrawLine(pen,3,9,17,9);}
-                else if(code == "\uE916") {g.DrawArc(pen,3,4,14,14,180,180);g.DrawLine(pen,10,11,14,7);g.DrawLine(pen,5,16,15,16);}
-                else if(code == "\uE8BB") {g.DrawLines(pen,new PointF[]{new PointF(8,3),new PointF(3,3),new PointF(3,17),new PointF(8,17)});g.DrawLine(pen,8,10,17,10);g.DrawLines(pen,new PointF[]{new PointF(13,6),new PointF(17,10),new PointF(13,14)});}
-                else {for(int y=5;y<=15;y+=5){g.DrawLine(pen,7,y,17,y);g.DrawLine(pen,3,y,3.5f,y);}}
             }
-            return image;
+            menu.ShowCheckMargin = checks;
+            menu.ResumeLayout(true);
+            ShapeMenu(menu);
         }
         internal static void Message(IWin32Window owner, string message, string title)
         {
-            using (Form dialog = new Form { Text = title, ClientSize = new Size(470,230), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = owner == null ? FormStartPosition.CenterScreen : FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false })
-            {
-                Window(dialog);
-                dialog.Controls.Add(new PictureBox { Image = BrandImage, Location = new Point(24,24), Size = new Size(40,40), SizeMode = PictureBoxSizeMode.Zoom });
-                dialog.Controls.Add(new Label { Text = title, Location = new Point(82,27), Size = new Size(365,36), Font = new Font(BodyFont.FontFamily,15,FontStyle.Bold) });
-                dialog.Controls.Add(new Label { Text = message, Location = new Point(26,82), Size = new Size(420,90) });
-                ModernButton ok = new ModernButton { Text = "确定", Primary = true, Location = new Point(330,180), Size = new Size(116,34), DialogResult = DialogResult.OK };
-                dialog.Controls.Add(ok); dialog.AcceptButton = ok; dialog.CancelButton = ok; Apply(dialog); dialog.AutoScaleDimensions = new SizeF(96,96); dialog.AutoScaleMode = AutoScaleMode.Dpi; dialog.ShowDialog(owner);
-            }
+            using (NoticeDialog dialog = new NoticeDialog(message, title, owner != null)) dialog.ShowDialog(owner);
+        }
+    }
+    internal sealed class NoticeDialog : Form
+    {
+        internal NoticeDialog(string message, string title, bool owned)
+        {
+            SuspendLayout();
+            Text = title;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = owned ? FormStartPosition.CenterParent : FormStartPosition.CenterScreen;
+            MaximizeBox = MinimizeBox = false;
+            Ui.Window(this);
+            ClientSize = new Size(472, 213);
+
+            Controls.Add(new PictureBox { Image = Ui.BrandImage, Location = new Point(20, 14), Size = new Size(32, 32), SizeMode = PictureBoxSizeMode.Zoom });
+            Controls.Add(new Label { Text = title, Location = new Point(64, 12), Size = new Size(388, 36), AutoEllipsis = true,
+                Font = new Font(Ui.BodyFont.FontFamily, 15, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft });
+
+            UiCard content = new UiCard { Location = new Point(20, 59), Size = new Size(432, 91), Padding = new Padding(14) };
+            string paragraphs = (message ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", Environment.NewLine);
+            TextBox body = new TextBox { Name = "NoticeBody", AccessibleName = "提示正文", Text = paragraphs, Multiline = true, ReadOnly = true,
+                Dock = DockStyle.Fill };
+            content.Controls.Add(body);
+            Controls.Add(content);
+            Controls.Add(new Panel { BackColor = Ui.Border, Location = new Point(20, 158), Size = new Size(432, 1) });
+            ModernButton ok = new ModernButton { Text = "确定", Primary = true, Location = new Point(336, 168), Size = new Size(116, 34), DialogResult = DialogResult.OK };
+            Controls.Add(ok);
+            AcceptButton = ok; CancelButton = ok;
+            Ui.Apply(this);
+            body.BorderStyle = BorderStyle.None;
+            Shown += delegate {
+                int lines = body.GetLineFromCharIndex(body.TextLength) + 1;
+                if (lines * body.Font.Height > body.ClientSize.Height - 2) body.ScrollBars = ScrollBars.Vertical;
+            };
+            Ui.OrderTabStops(this);
+            ActiveControl = ok;
+            AutoScaleDimensions = new SizeF(96, 96);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            ResumeLayout(true);
         }
     }
     internal sealed class ModernButton : Button
     {
-        internal bool Primary, Selected;
+        internal bool Primary, Selected, Navigation;
         private bool hover, down;
         internal ModernButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; UseVisualStyleBackColor = false; Cursor = Cursors.Hand; SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true); }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
@@ -182,11 +244,25 @@ namespace LumaBar
         {
             e.Graphics.Clear(Parent == null ? Ui.Canvas : Parent.BackColor);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Color fill = Primary ? Ui.Accent : Selected || hover || down ? Ui.AccentSoft : BackColor;
-            Color text = Primary ? (Ui.Dark ? Color.FromArgb(20,45,36) : Color.White) : Selected ? Ui.Accent : ForeColor;
-            using (GraphicsPath path = Ui.Round(new RectangleF(.5f,.5f,Width-1,Height-1),7*Math.Max(1,Height/32f)))
-            using (Brush brush = new SolidBrush(fill)) using (Pen pen = new Pen(Focused ? Ui.Accent : Ui.Border)) { e.Graphics.FillPath(brush,path); e.Graphics.DrawPath(pen,path); }
-            TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled ? text : Ui.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
+            float scale = Math.Max(DeviceDpi / 96f, Height / (Navigation ? 36f : 34f));
+            bool highlighted = Selected || hover || down;
+            Color fill = Primary && Enabled ? Ui.Accent : Selected ? Ui.AccentSoft : highlighted ? Ui.Hover : BackColor;
+            Color text = Primary && Enabled ? Ui.AccentText : highlighted ? Ui.SelectionText(true) : ForeColor;
+            using (GraphicsPath path = Ui.Round(new RectangleF(.5f,.5f,Width-1,Height-1),8*scale))
+            using (Brush brush = new SolidBrush(fill)) using (Pen pen = new Pen(Focused ? Ui.Accent : Ui.Border))
+            {
+                e.Graphics.FillPath(brush,path);
+                if (!Navigation || (Focused && ShowFocusCues)) e.Graphics.DrawPath(pen,path);
+            }
+            Rectangle caption = ClientRectangle;
+            if (Navigation)
+            {
+                caption.X += (int)(16 * scale); caption.Width -= (int)(20 * scale);
+                if (Selected)
+                    using (GraphicsPath rail = Ui.Round(new RectangleF(3*scale, Height/2f-8*scale, 3*scale, 16*scale), 1.5f*scale))
+                    using (Brush brush = new SolidBrush(Ui.SelectionText(true) == Ui.Text ? Ui.Accent : Ui.AccentText)) e.Graphics.FillPath(brush, rail);
+            }
+            TextRenderer.DrawText(e.Graphics,Text,Font,caption,Enabled ? text : Ui.Muted,(Navigation ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter)|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
             if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle,-4,-4), Enabled ? text : Ui.Muted, fill);
         }
     }
@@ -246,7 +322,7 @@ namespace LumaBar
             e.Graphics.Clear(Parent == null ? Ui.Surface : Parent.BackColor); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             float scale = Math.Max(1,Font.Height/15f), size = 16*scale, y = (Height-size)/2;
             using (GraphicsPath path = Ui.Round(new RectangleF(.5f,y,size,size),4*scale)) using (Brush brush = new SolidBrush(Checked ? Ui.Accent : Ui.Surface)) using (Pen pen = new Pen(Enabled ? Ui.Border : Ui.Muted,scale)) { e.Graphics.FillPath(brush,path); e.Graphics.DrawPath(pen,path); }
-            if (Checked) using (Pen pen = new Pen(Ui.Dark ? Color.FromArgb(20,45,36) : Color.White,2*scale)) { pen.StartCap = pen.EndCap = LineCap.Round; e.Graphics.DrawLines(pen,new PointF[] { new PointF(4*scale,y+8*scale),new PointF(7*scale,y+11*scale),new PointF(12*scale,y+5*scale) }); }
+            if (Checked) using (Pen pen = new Pen(Ui.AccentText,2*scale)) { pen.StartCap = pen.EndCap = LineCap.Round; e.Graphics.DrawLines(pen,new PointF[] { new PointF(4*scale,y+8*scale),new PointF(7*scale,y+11*scale),new PointF(12*scale,y+5*scale) }); }
             TextRenderer.DrawText(e.Graphics,Text,Font,new Rectangle((int)(24*scale),0,Width-(int)(24*scale),Height),Enabled ? Ui.Text : Ui.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);
             if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics,ClientRectangle,Ui.Accent,Parent.BackColor);
         }
@@ -303,17 +379,51 @@ namespace LumaBar
         internal SettingsPages() { Appearance=TabAppearance.FlatButtons;SizeMode=TabSizeMode.Fixed;ItemSize=new Size(1,1);Padding=Point.Empty; }
         public override Rectangle DisplayRectangle { get { return new Rectangle(0,0,Width,Height); } }
     }
+    internal sealed class UiCard : Panel
+    {
+        internal UiCard()
+        {
+            BackColor = Ui.Surface;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            e.Graphics.Clear(Parent == null ? Ui.Canvas : Parent.BackColor);
+            if (Width < 2 || Height < 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath path = Ui.Round(new RectangleF(.5f,.5f,Width-1,Height-1),12*DeviceDpi/96f))
+            using (Brush brush = new SolidBrush(BackColor)) using (Pen pen = new Pen(Ui.Border))
+            { e.Graphics.FillPath(brush, path); e.Graphics.DrawPath(pen, path); }
+        }
+    }
     internal sealed class UiMenuRenderer : ToolStripProfessionalRenderer
     {
         protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) { e.Graphics.Clear(Ui.Surface); }
         protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
-        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;using(GraphicsPath path=Ui.Round(new RectangleF(.5f,.5f,e.ToolStrip.Width-1,e.ToolStrip.Height-1),8))using(Pen pen=new Pen(Ui.Border))e.Graphics.DrawPath(pen,path); }
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;using(GraphicsPath path=Ui.Round(new RectangleF(.5f,.5f,e.ToolStrip.Width-1,e.ToolStrip.Height-1),8*e.ToolStrip.DeviceDpi/96f))using(Pen pen=new Pen(Ui.Border))e.Graphics.DrawPath(pen,path); }
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            if(e.Item.Selected&&e.Item.Enabled){e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;using(GraphicsPath path=Ui.Round(new RectangleF(2,1,e.Item.Width-4,e.Item.Height-2),6))using(Brush brush=new SolidBrush(Ui.AccentSoft))e.Graphics.FillPath(brush,path);}
+            if ((e.Item.Selected || e.Item.Pressed) && e.Item.Enabled)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (GraphicsPath path = Ui.Round(new RectangleF(1,1,e.Item.Width-2,e.Item.Height-2),5*e.ToolStrip.DeviceDpi/96f))
+                using (Brush brush = new SolidBrush(e.Item.Pressed ? Ui.AccentSoft : Ui.Hover)) e.Graphics.FillPath(brush,path);
+            }
         }
-        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) { e.TextColor=e.Item.Enabled?Ui.Text:Ui.Muted;base.OnRenderItemText(e); }
-        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) { using(Pen pen=new Pen(Ui.Border))e.Graphics.DrawLine(pen,8,e.Item.Height/2,e.Item.Width-8,e.Item.Height/2); }
-        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e) { e.ArrowColor=Ui.Muted;base.OnRenderArrow(e); }
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) { e.TextColor=e.Item.Enabled?Ui.SelectionText(e.Item.Selected || e.Item.Pressed):Ui.Muted;base.OnRenderItemText(e); }
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+        {
+            Rectangle box = e.ImageRectangle;
+            float x = box.Left + box.Width / 2f, y = box.Top + box.Height / 2f;
+            float scale = Math.Max(1, Math.Min(box.Width, box.Height) / 16f);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (Pen pen = new Pen(Ui.SelectionText(e.Item.Selected), 1.5f * scale))
+            {
+                pen.StartCap = pen.EndCap = LineCap.Round;
+                e.Graphics.DrawLines(pen, new[] { new PointF(x-4*scale,y), new PointF(x-1*scale,y+3*scale), new PointF(x+5*scale,y-3*scale) });
+            }
+        }
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) { using(Pen pen=new Pen(Ui.Border))e.Graphics.DrawLine(pen,6,e.Item.Height/2,e.Item.Width-6,e.Item.Height/2); }
+        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e) { e.ArrowColor=Ui.SelectionText(e.Item.Selected || e.Item.Pressed);base.OnRenderArrow(e); }
     }
 }

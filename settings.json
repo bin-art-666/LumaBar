@@ -1,4 +1,7 @@
 {
+  "MouseGlow": true,
+  "MouseGlowRadius": 100,
+  "MouseGlowStrength": 25,
   "PollMilliseconds": 350,
   "StableMilliseconds": 700,
   "ContentStableMilliseconds": 1400,

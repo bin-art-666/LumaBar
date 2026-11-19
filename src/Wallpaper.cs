@@ -96,6 +96,11 @@ namespace LumaBar
         private static readonly Stopwatch clock = Stopwatch.StartNew();
         private static readonly Dictionary<string, Cache> cache = new Dictionary<string, Cache>();
 
+        internal static void Invalidate()
+        {
+            foreach (Cache entry in cache.Values) { entry.NextCheck = 0; entry.Fingerprint = null; }
+        }
+
         internal static WindowSample Read(Rectangle monitor)
         {
             string key = monitor.ToString() + SystemInformation.VirtualScreen.ToString();
@@ -222,6 +227,8 @@ namespace LumaBar
         private static long nextContext;
         internal static void Invalidate()
         {
+            // Theme and glass sample different regions of the same desktop wallpaper.
+            ThemeWallpaperSampler.Invalidate();
             foreach (Cache entry in cache.Values) { entry.NextCheck = 0; entry.Fingerprint = null; }
         }
         internal static WindowSample Read(Rectangle monitor) { return Read(monitor, false); }

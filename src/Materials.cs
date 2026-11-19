@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace LumaBar
@@ -205,18 +206,18 @@ namespace LumaBar
         {
             internal MaterialPlan Plan;
             internal bool Stop;
-            internal ManualResetEvent Completed;
-            internal Exception Error;
-            internal bool Abandoned;
+            internal TaskCompletionSource<Exception> RestoreResult;
             internal int Generation;
             internal long Sequence;
         }
         private readonly object gate = new object();
         private readonly Queue<Request> requests = new Queue<Request>();
         private readonly AutoResetEvent ready = new AutoResetEvent(false);
+        private readonly TaskCompletionSource<bool> stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Thread worker;
         private readonly IMaterialBackend backend;
         private bool owned, disposed, faulted;
+        private Task<Exception> pendingRestore;
         private uint ownerPid, failurePid;
         private string failureReason;
         private string failureTopology;
@@ -242,60 +243,61 @@ namespace LumaBar
             worker.SetApartmentState(ApartmentState.STA); worker.Start();
         }
         internal void Retry()
-        { Interlocked.Increment(ref retryEpoch); lastKey = null; }
+        { lock (gate) { Interlocked.Increment(ref retryEpoch); lastKey = null; } }
         internal void InvalidatePending()
         {
             lock (gate)
             {
+                if (disposed) return;
                 generation++;
                 Request[] pending = requests.ToArray(); requests.Clear();
-                foreach (Request request in pending) if (request.Completed != null) requests.Enqueue(request);
+                foreach (Request request in pending) if (request.RestoreResult != null) requests.Enqueue(request);
+                lastKey = null;
             }
-            lastKey = null;
         }
         internal long Apply(GlassSettings settings, MaterialScene scene, Tone tone, bool force = false)
         { return Apply(ReadabilityPolicy.Capture(settings, scene, tone), force); }
         internal long Apply(MaterialPlan plan, bool force = false)
         {
-            if (disposed) return 0;
             string key = plan.Key;
-            uint explorer = backend.ExplorerPid;
-            if (!force && key == lastKey && explorer == lastRequestPid &&
-                (clock.ElapsedMilliseconds < nextApply || snapshot.State != MaterialState.Waiting)) return lastQueuedSequence;
-            lastRequestPid = explorer;
-            lastKey = key; nextApply = clock.ElapsedMilliseconds + 2000;
             lock (gate)
             {
-                if (requests.Count > 0 && requests.Peek().Completed == null) requests.Dequeue();
+                if (disposed) return 0;
+                uint explorer = backend.ExplorerPid;
+                if (!force && key == lastKey && explorer == lastRequestPid &&
+                    (clock.ElapsedMilliseconds < nextApply || snapshot.State != MaterialState.Waiting)) return lastQueuedSequence;
+                lastRequestPid = explorer;
+                lastKey = key; nextApply = clock.ElapsedMilliseconds + 2000;
+                if (requests.Count > 0 && requests.Peek().RestoreResult == null) requests.Dequeue();
+                pendingRestore = null;
                 lastQueuedSequence = ++nextSequence;
                 requests.Enqueue(new Request { Plan = plan.Enabled ? plan : null, Generation = generation, Sequence = lastQueuedSequence });
+                ready.Set();
+                return lastQueuedSequence;
             }
-            ready.Set();
-            return lastQueuedSequence;
         }
-        internal void Restore()
+        internal void Restore() { RestoreAsync().GetAwaiter().GetResult(); }
+        internal async Task RestoreAsync()
         {
-            if (disposed) return;
-            Request request = new Request { Completed = new ManualResetEvent(false) };
+            Task<Exception> result;
             lock (gate)
             {
-                generation++;
-                Request[] pending = requests.ToArray(); requests.Clear();
-                foreach (Request previous in pending) if (previous.Completed != null) requests.Enqueue(previous);
-                requests.Enqueue(request);
-            }
-            ready.Set();
-            if (!request.Completed.WaitOne(5000))
-            {
-                lock (request)
+                if (disposed) return;
+                // A retry after a timeout can still await the in-flight native call.
+                if (pendingRestore == null || pendingRestore.IsCompleted)
                 {
-                    if (request.Completed.WaitOne(0)) request.Completed.Dispose(); else request.Abandoned = true;
+                    InvalidatePending();
+                    Request request = new Request { RestoreResult = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously) };
+                    pendingRestore = request.RestoreResult.Task;
+                    requests.Enqueue(request);
+                    ready.Set();
                 }
-                throw new TimeoutException("任务栏材质仍在连接或恢复，请稍后重试。");
+                result = pendingRestore;
             }
-            lock (request) { request.Completed.Dispose(); }
-            lastKey = null;
-            if (request.Error != null) throw new InvalidOperationException("材质恢复未确认，请重试或正常退出。", request.Error);
+            if (!result.IsCompleted) await Task.WhenAny(result, Task.Delay(5000)).ConfigureAwait(false);
+            if (!result.IsCompleted)
+                throw new TimeoutException("任务栏材质仍在连接或恢复，请稍后重试。");
+            if (result.Result != null) throw new InvalidOperationException("材质恢复未确认，请重试或正常退出。", result.Result);
         }
         private void RestoreOwned()
         {
@@ -312,7 +314,12 @@ namespace LumaBar
                     {
                         Request request;
                         lock (gate) { if (requests.Count == 0) break; request = requests.Dequeue(); }
-                        if (request.Stop) { backend.Dispose(); return; }
+                        if (request.Stop)
+                        {
+                            try { backend.Dispose(); } catch (Exception error) { Files.Log("Material cleanup: " + error); }
+                            return;
+                        }
+                        Exception failure = null;
                         try
                         {
                             if (request.Plan == null)
@@ -325,8 +332,14 @@ namespace LumaBar
                         }
                         catch (Exception error)
                         {
-                            request.Error = error; faulted = true; failurePid = backend.ExplorerPid; failureReason = error.Message;
+                            failure = error; faulted = true; failurePid = backend.ExplorerPid; failureReason = error.Message;
                             failureTopology = request.Plan == null ? null : request.Plan.TopologyKey;
+                            if (request.RestoreResult != null)
+                            {
+                                Files.Log("Material restore unconfirmed: " + error);
+                                snapshot = new MaterialSnapshot(MaterialState.RestoreFailed, "材质恢复未确认 · 请重试", true);
+                                continue;
+                            }
                             Files.Log("Material fallback: " + error);
                             try
                             {
@@ -342,13 +355,12 @@ namespace LumaBar
                         finally
                         {
                             Interlocked.Increment(ref completedUpdates);
-                            if (request.Completed != null)
-                                lock (request) { if (request.Abandoned) request.Completed.Dispose(); else request.Completed.Set(); }
+                            if (request.RestoreResult != null) request.RestoreResult.SetResult(failure);
                         }
                     }
                 }
             }
-            finally { ready.Dispose(); }
+            finally { ready.Dispose(); stopped.TrySetResult(true); }
         }
         private bool ApplyCore(MaterialPlan plan, int requestedGeneration)
         {
@@ -387,12 +399,19 @@ namespace LumaBar
                 plan.Custom ? "玻璃效果已应用 · " + plan.Description : "系统原生材质");
             return true;
         }
-        public void Dispose()
+        internal Task StopAfterRestore()
         {
-            if (disposed) return;
-            Restore(); disposed = true;
-            lock (gate) { requests.Enqueue(new Request { Stop = true }); }
-            ready.Set(); worker.Join(1000);
+            lock (gate)
+            {
+                if (!disposed)
+                {
+                    disposed = true;
+                    requests.Enqueue(new Request { Stop = true });
+                    ready.Set();
+                }
+                return stopped.Task;
+            }
         }
+        public void Dispose() { Restore(); StopAfterRestore().Wait(1000); }
     }
 }
