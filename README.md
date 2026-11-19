@@ -318,6 +318,14 @@ Windows 的实际刷新时机和视觉效果取决于系统版本及现有主题
 
 打包优先使用子模块中固定的 TranslucentTB 提交。子模块不可用时，脚本校验并使用 `native/upstream-cache/` 内以 `TranslucentTB-<提交哈希>.zip` 命名的源码归档，缺少本地归档时从 GitHub 获取。
 
+### 标签发布
+
+发布前，更新 `src/App.cs` 的 `BuildVersion`，并将版本修改和 README 下载链接一起提交。向 GitHub 推送对应的 `v` 开头的标签，例如文件版本 `0.6.15.0` 使用 `v0.6.15`。
+
+GitHub Actions 会在 Windows 上运行浅色和深色回归测试，核对标签与编译产物版本，然后打包。两项测试和两个 ZIP 都通过检查后，工作流才会为该标签创建预览版 Release，生成更新说明并附上运行包与源码包。
+
+也可以在 GitHub 的 Actions → Release → Run workflow 中选择 `main` 手动验证。手动运行会执行相同的回归测试和打包步骤，两个 ZIP 可从该次运行的 `lumabar-release` 产物下载。
+
 ```powershell
 # 展示一个测试窗口，验证深色变浅色时能实际读取新的像素；不修改真实主题。
 .\tests\bin\LumaBar.Tests.exe --native

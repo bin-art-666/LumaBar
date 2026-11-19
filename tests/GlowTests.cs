@@ -110,7 +110,6 @@ namespace LumaBar
             long now = 0;
             Point pointer = new Point(-4980, -4980);
             Rectangle target = new Rectangle(-5000, -5000, 300, 48);
-            IntPtr foreground = Native.GetForegroundWindow();
             uint before = Native.GetGuiResources(Process.GetCurrentProcess().Handle, 0);
             using (TaskbarGlow glow = new TaskbarGlow(delegate { return enabled; }, delegate { return false; },
                 delegate { return pointer; }, delegate(Point p) { return !covered && target.Contains(p) ? target : Rectangle.Empty; }, delegate { return now; }, delegate { return radius; }, delegate { return strength; }))
@@ -130,9 +129,14 @@ namespace LumaBar
                 for (int i = 0; i < 12; i++) { now += 16; glow.Advance(); }
                 Check(glow.Active, "raising intensity from zero resumes the glow");
                 renders = glow.PresentCount;
-                for (int i = 0; i < 100; i++) { pointer.X = -4970 + i; now += 16; glow.Advance(); }
-                Check(glow.PresentCount == renders + 100 && Native.GetForegroundWindow() == foreground,
-                    "moving glow follows each position without stealing foreground focus");
+                bool glowActivated = false;
+                for (int i = 0; i < 100; i++)
+                {
+                    pointer.X = -4970 + i; now += 16; glow.Advance();
+                    glowActivated |= Control.FromHandle(Native.GetForegroundWindow()) is TaskbarGlowWindow;
+                }
+                Check(glow.PresentCount == renders + 100 && !glowActivated,
+                    "moving glow follows every position without becoming the foreground window");
                 Check(Native.GetGuiResources(Process.GetCurrentProcess().Handle, 0) <= before + 12, "repeated glow frames do not accumulate GDI objects");
                 pointer.Y = -4900; now += 16; glow.Advance();
                 Check(glow.Active, "leaving taskbar begins a fade rather than an abrupt disappearance");
