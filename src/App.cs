@@ -15,7 +15,7 @@ namespace LumaBar
 {
     internal static class Program
     {
-        internal const string BuildVersion = "0.6.14.0";
+        internal const string BuildVersion = "0.6.15.0";
         internal static string ActivationName { get { return @"Local\LumaBar-Activate-" + WindowsIdentity.GetCurrent().User.Value; } }
         internal static bool RequestActivation(string eventName = null)
         {

@@ -2,7 +2,7 @@
 
 根据最大化窗口或桌面壁纸的明暗，自动切换 Windows 11 任务栏、开始菜单和快捷设置，并为任务栏叠加可调的透明、模糊和亚克力材质。
 
-**[下载 0.6.14 预览版（Windows x64）](https://github.com/bin-art-666/LumaBar/releases/download/v0.6.14/LumaBar-0.6.14-preview-x64.zip)** · [源码包](https://github.com/bin-art-666/LumaBar/releases/download/v0.6.14/LumaBar-0.6.14-source.zip) · [更新说明](https://github.com/bin-art-666/LumaBar/releases/tag/v0.6.14) · [0.4.0 稳定版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.4.0) · [构建与测试](#构建与测试) · [验证记录](VALIDATION.md) · [GPL-3.0 许可证](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
+**[下载 0.6.15 预览版（Windows x64）](https://github.com/bin-art-666/LumaBar/releases/download/v0.6.15/LumaBar-0.6.15-preview-x64.zip)** · [源码包](https://github.com/bin-art-666/LumaBar/releases/download/v0.6.15/LumaBar-0.6.15-source.zip) · [更新说明](https://github.com/bin-art-666/LumaBar/releases/tag/v0.6.15) · [0.4.0 稳定版](https://github.com/bin-art-666/LumaBar/releases/tag/v0.4.0) · [构建与测试](#构建与测试) · [验证记录](VALIDATION.md) · [GPL-3.0 许可证](LICENSE) · [第三方声明](THIRD_PARTY_NOTICES.md)
 
 ![LumaBar 主界面](docs/screenshots/main.png)
 
@@ -15,6 +15,11 @@
 </details>
 
 0.4 新增图形设置页与可选开机自启。在主界面点击“设置…”或从托盘打开“设置…”，可以调整切换速度、管理应用规则，或开启“登录 Windows 后自动启动”。保存后立即生效，取消则不保存。高级参数仍可在 settings.json 中调整。
+
+## 0.6.15：标签自动发布（2026-11-19）
+
+- 推送版本标签后，GitHub Actions 运行深浅色回归测试、核对版本并生成两个 ZIP，检查通过后发布预览版。
+- 与 0.6.14 使用相同的界面和设置。运行包可通过托盘菜单中的「从更新包更新…」安装。
 
 ## 0.6.14：统一主界面、设置与托盘样式（2026-11-19）
 
